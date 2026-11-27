@@ -726,3 +726,61 @@ class PassiveTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LeadQuotaGuardTest(unittest.TestCase):
+    """When Claude itself is critical, the hooks steer work to other providers instead of Agent subagents."""
+
+    call, mode, hook, save_quota = PassiveTest.call, PassiveTest.mode, PassiveTest.hook, PassiveTest.save_quota
+
+    def setUp(self):
+        PassiveTest.setUp(self)
+        installed = mock.patch.object(r, "available_builtin_providers", return_value=["codex", "claude", "agy"])
+        installed.start()
+        self.addCleanup(installed.stop)
+        self.save_quota(percent=85, provider="claude")
+        self.save_quota(percent=4, provider="agy")
+        self.save_quota(percent=4, provider="codex")
+
+    def pre_tool(self, subagent="implementer", session="fixture", description="Implement task 3"):
+        output = self.hook("PreToolUse", session=session, tool_name="Agent",
+                           tool_input={"subagent_type": subagent, "description": description, "prompt": "x"})
+        return json.loads(output)["hookSpecificOutput"] if output.strip() else None
+
+    def test_passive_prompt_names_the_critical_lead_and_where_to_send_work(self):
+        output = self.hook()
+        self.assertIn("Claude 5h is at 85%, past the 80% critical threshold", output)
+        self.assertIn("every Agent subagent", output)
+        self.assertIn("to Codex, Antigravity as alethe workers", output)
+        self.assertIn("ask whether to move the work", output)
+
+    def test_balanced_mode_prompt_carries_quota_and_guidance(self):
+        self.mode("on", "--goal", "balanced")
+        output = self.hook()
+        self.assertIn("show the user one line per unit: provider, model and why", output)
+        self.assertIn("Quota: Codex 5h 4%", output)
+        self.assertIn("Claude 5h is at 85%", output)
+
+    def test_implementation_agents_need_the_users_ok_while_claude_is_critical(self):
+        self.mode("on", "--goal", "balanced")
+        first = self.pre_tool()
+        self.assertEqual(first["permissionDecision"], "ask")
+        self.assertIn("Claude 5h is at 85%", first["permissionDecisionReason"])
+        self.assertIn("before this dispatch, show the user", first["additionalContext"])
+        second = self.pre_tool()
+        self.assertNotIn("before this dispatch", second["additionalContext"])
+        self.assertIsNone(self.pre_tool("Explore", description="Find the callers"))
+
+    def test_agent_guard_policy_can_deny_or_switch_off(self):
+        self.mode("on", "--goal", "balanced")
+        self.call("policy", "set", "--agent-guard", "deny", "--file", self.policy)
+        self.assertEqual(self.pre_tool()["permissionDecision"], "deny")
+        self.call("policy", "set", "--agent-guard", "off", "--file", self.policy)
+        self.assertNotIn("permissionDecision", self.pre_tool(session="other") or {})
+
+    def test_no_guard_while_claude_has_room(self):
+        self.save_quota(percent=10, provider="claude")
+        self.mode("on", "--goal", "balanced")
+        output = self.pre_tool()
+        self.assertNotIn("permissionDecision", output)
+        self.assertNotIn("Claude 5h is at", self.hook())

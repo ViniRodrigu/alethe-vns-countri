@@ -3,7 +3,7 @@ name: alethe
 description: Orchestrate bounded Codex, Claude Code, Agy, Kimi, or custom CLI workers to finish work with the least lead context and provider usage, following playbooks such as plan big, execute small. Use when the user asks to orchestrate, delegate, compare agents, conserve agent tokens or quota, recover a worker, report what an orchestration did and cost, or work without MCP or Python, when the user types /alethe or a short command such as "alethe report" or "alethe stop", and when they want it on from now on, at any point of a task and alongside other skills. Also use it proactively, without being asked, when a request is large enough to split into bounded independent units, such as a multi-file refactor, a migration, an audit or research across many files. Default passive mode watches session spend and quota and delegates cheaper bounded units; spend reports the lead session. Keep small work with the lead.
 argument-hint: "[task or standing instruction] | on | off | passive | spend | save | max | freestyle | careful | report | status | usage | models | editor | list | stop | clean | skip <phase> | switch <playbook> | freeform | budget <limit> | mark <worker> <used|partial|discarded> | setup | help"
 metadata:
-  version: "28"
+  version: "29"
 ---
 
 # Orchestrate CLI workers
@@ -110,7 +110,9 @@ Prefer Codex while both its 5h and week windows are known, fresh and below
 even if its rate-limit windows have room. Run each bounded Codex unit as a one-worker `economy`
 wave through `new`, `run --detach`, and `wait`, pinning model and effort. When Codex is low or the unit needs
 this conversation's context, use the agent's own cheaper subagents instead: in Claude Code,
-the Agent tool with `model: haiku` or `sonnet`, and a pinned effort where supported. Unknown
+the Agent tool with `model: haiku` or `sonnet`, and a pinned effort where supported. Agent
+subagents, haiku and sonnet included, spend the same Claude quota as the lead: never use them as
+the fallback when Claude itself is past `quota.criticalThreshold`. Unknown
 quota is not evidence of spare room; ask before routing on unknown/stale readings, without
 refreshing Claude from a hook. Cheaper subagents must meet the same billing and quota conditions.
 
@@ -121,7 +123,14 @@ or passing `quota.stopAt`. When spend climbs on routine work, suggest `/model so
 the lead model is the user's choice.
 
 The hook gives a short brief on the first prompt, then stays quiet until a time, spend or quota
-check is due, including during long tool turns. `spend` reads Claude Code JSONL locally, separates
+check is due, including during long tool turns. While Claude is past `quota.criticalThreshold`,
+every prompt, in passive and in `on` modes, carries a line naming the window, the providers with
+room, and, with `providerSwitch: ask`, the instruction to ask the user before the next dispatch.
+A `PreToolUse` hook on the Agent tool then applies `policy.agentGuard` to implementation, test
+and review subagents: `ask` (default) shows the user a confirmation, `deny` refuses, `warn` only
+adds the note, and `off` disables it (`policy set --agent-guard <mode>`). Read-only explorers
+pass. The first Agent dispatch of a session also reminds the lead to show one line per unit:
+provider, model and why. `spend` reads Claude Code JSONL locally, separates
 lead and delegated usage, and shows a list-price estimate: a subscription yardstick, not a bill.
 `/alethe off` disables it in this project; `/alethe off everywhere` disables it everywhere.
 `/alethe passive` enables it explicitly here. `ALETHE_PASSIVE=0` disables only the implicit
