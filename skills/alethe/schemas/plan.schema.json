@@ -83,9 +83,24 @@
         "outputFormat": { "enum": ["text", "json", "jsonl"] },
         "allowUnsafe": { "type": "boolean", "default": false },
         "mcp": { "type": "boolean", "default": false },
+        "claudeSkills": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow skills and slash commands from user settings on an explicit Claude worker."
+        },
         "idleTimeoutSeconds": { "type": "integer", "minimum": 5, "maximum": 86400 }
       },
       "allOf": [
+        {
+          "if": {
+            "required": ["claudeSkills"],
+            "properties": { "claudeSkills": { "const": true } }
+          },
+          "then": {
+            "required": ["provider"],
+            "properties": { "provider": { "const": "claude" } }
+          }
+        },
         {
           "if": { "properties": { "provider": { "const": "custom" } } },
           "then": { "required": ["command"] }

@@ -230,6 +230,59 @@ class RunnerTest(Fixtures):
         self.assertIn("- **Budget:** stopped 1 worker (budget maxCalls 2 exhausted)", markdown)
         self.assertEqual(saved.read_text(encoding="utf-8"), markdown)
 
+    def test_proposal_pilot_reassigns_after_rate_limit_and_verifies_patch(self):
+        repo = self.make_repo()
+        (repo / "names.py").write_text("def normalize(name):\n    return name.lower()\n", encoding="utf-8")
+        (repo / "check_names.py").write_text(
+            "from names import normalize\nassert normalize(' Ada ') == 'ada'\n"
+            "assert normalize('Grace Hopper') == 'grace hopper'\n",
+            encoding="utf-8",
+        )
+        git(repo, "add", "names.py", "check_names.py")
+        git(repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "fixture")
+        brief = (
+            "Goal: fix name normalization. Scope: names.py only. "
+            "Dependency: callers expect internal whitespace to be preserved. "
+            "Context: names.py returns name.lower(); check_names.py tests padded and multiword names. "
+            "Deliver a unified diff and explain both acceptance cases. The lead runs check_names.py."
+        )
+        proposal = (
+            "STATUS: DONE\nSUMMARY: Strip edge whitespace while preserving internal spaces.\n"
+            "Evidence: names.py:2 lowercases names; check_names.py covers both cases.\n"
+            "Checks: pending local execution.\n\n"
+            "--- a/names.py\n+++ b/names.py\n@@ -1,2 +1,2 @@\n"
+            " def normalize(name):\n-    return name.lower()\n+    return name.strip().lower()\n"
+        )
+        orchestration = self.root / "pilot"
+        for attempt, (worker_id, args) in enumerate(
+            (("primary", ["ratelimit"]), ("backup", ["say", proposal])), start=1
+        ):
+            run_dir = orchestration / f"0{attempt}-{worker_id}"
+            plan = self.write_plan(worker_id, {
+                "version": 1, "title": "Review a proposed normalization fix", "phase": worker_id,
+                "strategy": "economy", "budget": {"maxCalls": 1},
+                "workers": [self.worker(worker_id, "write", args, "text", repo,
+                                        isolate=True, task=brief)],
+            })
+            code, _, err = self.call("run", plan, "--run-dir", run_dir, "--policy", self.policy)
+            self.assertEqual(code, 1 if attempt == 1 else 0, err)
+            worker_dir = run_dir / "workers" / worker_id
+            outcome = json.loads((worker_dir / "outcome.json").read_text(encoding="utf-8"))
+            if attempt == 1:
+                self.assertEqual(outcome["failureKind"], "rate_limited")
+            else:
+                self.assertEqual(outcome["status"], "succeeded")
+                result = (worker_dir / "result.md").read_text(encoding="utf-8")
+        self.assertEqual(git(repo, "status", "--porcelain"), "")
+        before = subprocess.run([sys.executable, "-B", "check_names.py"], cwd=repo, capture_output=True)
+        self.assertIn(b"AssertionError", before.stderr)
+        patch = self.root / "proposal.patch"
+        patch.write_bytes(result[result.index("--- a/names.py"):].strip().encode("utf-8") + b"\n")
+        git(repo, "apply", "--check", str(patch))
+        git(repo, "apply", str(patch))
+        subprocess.run([sys.executable, "-B", "check_names.py"], cwd=repo, check=True)
+        self.assertEqual(git(repo, "diff", "--name-only").strip(), "names.py")
+
     def test_worktrees_stay_out_of_git_status(self):
         repo, _ = self.run_two_waves()
         again = self.write_plan(
@@ -291,7 +344,12 @@ class RunnerTest(Fixtures):
         expected = f"{version}.0.0"
         plugin = json.loads((ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
         marketplace = json.loads((ROOT / ".agents" / "plugins" / "marketplace.json").read_text(encoding="utf-8"))
+        claude_plugin = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+        claude_marketplace = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
         self.assertEqual(plugin["version"], expected)
+        self.assertEqual(claude_plugin["version"], expected)
+        self.assertEqual(claude_marketplace["name"], marketplace["name"])
+        self.assertEqual(claude_marketplace["plugins"][0]["name"], claude_plugin["name"])
         self.assertEqual([entry["version"] for entry in marketplace["plugins"]], [expected])
         self.assertTrue((ROOT / plugin["skills"] / "alethe" / "SKILL.md").is_file())
         for readme in ("README.md", "README.pt-BR.md"):

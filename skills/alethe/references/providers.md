@@ -71,6 +71,57 @@ runner keeps slash expansion enabled in plan mode because agy 1.4.9 ignores `--m
 it. Denied actions appear as `permissionDenials`; an empty denied response is a permission failure.
 Use Codex or Claude when a read-only unit needs shell commands.
 
+## Claude Code skills
+
+Set `claudeSkills: true` on an explicit `provider: "claude"` worker in the local runner to allow
+skills and slash commands. This enables the CLI's skill surface, including other installed
+skills. The worker inherits the launching process's Claude profile, including
+`CLAUDE_CONFIG_DIR` when set, and uses user settings. Install the plugin at user scope in that
+profile. The runner still denies `Agent` and `Workflow` and keeps MCP disabled by default.
+
+Check the installation with `claude plugin list` in the shell that will launch Alethe.
+If needed, install from the [Superpowers marketplace](https://github.com/obra/superpowers#claude-code)
+in an interactive Claude Code session and reload the plugins:
+
+```text
+/plugin marketplace add obra/superpowers-marketplace
+/plugin install superpowers@superpowers-marketplace
+/reload-plugins
+```
+
+From the skill repository root, save this plan as `superpowers-smoke.json`:
+
+```json
+{
+  "version": 1,
+  "strategy": "economy",
+  "budget": { "maxCalls": 1 },
+  "workers": [
+    {
+      "id": "superpowers-smoke",
+      "provider": "claude",
+      "mode": "read-only",
+      "claudeSkills": true,
+      "cwd": ".",
+      "timeoutSeconds": 90,
+      "task": "Invoke superpowers:verification-before-completion through Skill. Return one verification rule. If Skill is unavailable or fails, report BLOCKED. Do not edit files."
+    }
+  ]
+}
+```
+
+```text
+python skills/alethe/scripts/orchestrate.py dry-run superpowers-smoke.json
+python skills/alethe/scripts/orchestrate.py run superpowers-smoke.json
+python skills/alethe/scripts/orchestrate.py report
+```
+
+Use your preferred Claude model in the plan. Verify an actual invocation and successful tool
+result in the worker's `stdout.log`. A plugin listing or a model's summary alone cannot
+establish invocation. If the plugin is listed but missing from the worker, check that both
+processes use the same executable and user profile. In a larger wave, use a specific skill
+like systematic debugging or verification before completion within each assigned brief.
+
 ## Windows
 
 npm installs CLIs such as `codex`, `claude`, `kimi` and `gemini` as `.cmd` shims. cmd.exe re-parses

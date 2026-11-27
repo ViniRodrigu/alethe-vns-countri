@@ -155,6 +155,25 @@ class SecurityTest(unittest.TestCase):
                             ("--max-budget-usd", "0.50"), ("--permission-prompts", "none")):
             self.assertEqual(args[args.index(flag) + 1], value)
         self.assertIn("--strict-mcp-config", args)
+        self.assertIn("--disable-slash-commands", args)
+
+    def test_claude_skills_are_opt_in_with_user_settings_and_no_nested_agents(self):
+        with self.fake_cli():
+            args = self.invocation(self.worker(claudeSkills=True))
+        self.assertNotIn("--disable-slash-commands", args)
+        self.assertEqual(args[args.index("--setting-sources") + 1], "user")
+        self.assertEqual(args[args.index("--disallowedTools") + 1], "Agent,Workflow")
+        self.assertIn("--strict-mcp-config", args)
+
+    def test_claude_skills_require_an_explicit_claude_provider_and_a_boolean(self):
+        for worker in (self.worker("auto", claudeSkills=True), self.worker(claudeSkills="true")):
+            with self.subTest(worker=worker), self.assertRaisesRegex(r.PlanError, "claudeSkills"):
+                self.resolve(worker)
+
+    def test_claude_skills_refuse_launch_without_safety_flags(self):
+        with self.fake_cli(), mock.patch.object(r, "command_help", return_value="--setting-sources"):
+            with self.assertRaisesRegex(r.PlanError, "disallow nested agents"):
+                self.invocation(self.worker(claudeSkills=True))
 
     def test_agy_plan_keeps_slash_expansion_but_write_disables_it(self):
         with self.fake_cli():

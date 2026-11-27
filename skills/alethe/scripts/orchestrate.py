@@ -230,6 +230,8 @@ FAILURE_HINTS = {
 }
 ERROR_LINE = re.compile(r"\berror\b|\bfailed\b|denied|forbidden|exception|\b4\d\d\b|\b5\d\d\b", re.IGNORECASE)
 FAILURE_PATTERNS = (
+    ("timed_out", re.compile(r"\bFreeLLMAPI request timed out\b")),
+    ("invalid_output", re.compile(r"\bFreeLLMAPI returned an invalid, incomplete or oversized proposal\b")),
     ("permission_denied", re.compile(r"permission denied|denied actions?", re.IGNORECASE)),
     ("rate_limited", re.compile(r"\b429\b|rate.?limit|usage limit|quota|too many requests|hit your (?:\w+ )?limit", re.I)),
     (
@@ -2129,6 +2131,7 @@ def validate_plan(
             "outputFormat",
             "allowUnsafe",
             "mcp",
+            "claudeSkills",
             "idleTimeoutSeconds",
         }
         if unknown:
@@ -2188,6 +2191,11 @@ def validate_plan(
         mcp = item.get("mcp", False)
         if not isinstance(mcp, bool):
             raise PlanError(f"worker {worker_id} mcp must be a boolean")
+        claude_skills = item.get("claudeSkills", False)
+        if not isinstance(claude_skills, bool):
+            raise PlanError(f"worker {worker_id} claudeSkills must be a boolean")
+        if claude_skills and requested_provider != "claude":
+            raise PlanError(f"worker {worker_id} claudeSkills requires an explicit Claude provider")
         idle_timeout = item.get("idleTimeoutSeconds")
         if idle_timeout is not None and (
             not isinstance(idle_timeout, int) or isinstance(idle_timeout, bool) or not 5 <= idle_timeout <= 86400
@@ -2209,6 +2217,7 @@ def validate_plan(
             "tier": tier,
             "resume": resume,
             "mcp": mcp,
+            "claudeSkills": claude_skills,
             "idleTimeoutSeconds": idle_timeout,
             "task": task,
             "trust": copy.deepcopy(policy["trust"]),
@@ -2216,6 +2225,8 @@ def validate_plan(
         if requested_provider == "custom":
             normalized.update(validate_custom(item, worker_id, policy["trust"]))
         chosen_provider = choose_provider(requested_provider, normalized, policy)
+        if claude_skills and chosen_provider != "claude":
+            raise PlanError(f"worker {worker_id} needs Claude skills; select Claude or remove claudeSkills")
         normalized["provider"] = chosen_provider
         if chosen_provider == requested_provider:
             normalized["routingNote"] = None
@@ -2662,11 +2673,14 @@ def build_invocation(
         help_text = command_help(launch, help_cache, help_lock)
         if not help_text.strip():
             raise PlanError("cannot read Claude --help for safety flags; repair the CLI/help command before starting a worker")
+        claude_skills = worker.get("claudeSkills", False)
+        if claude_skills and not all(flag in help_text for flag in ("--setting-sources", "--disallowedTools")):
+            raise PlanError("Claude skills require a CLI that can restrict settings sources and disallow nested agents")
         if "--setting-sources" in help_text:
             args += ["--setting-sources", "user"]
         if "--permission-prompts" in help_text:
             args += ["--permission-prompts", "none"]
-        if "--disable-slash-commands" in help_text:
+        if not claude_skills and "--disable-slash-commands" in help_text:
             args.append("--disable-slash-commands")
         if "--disallowedTools" in help_text:
             args += ["--disallowedTools", CLAUDE_AGENT_TOOLS]
@@ -5238,6 +5252,7 @@ def plan_payload(
                 if worker["provider"] in ("codex", "claude")
                 else "refused by the worker contract",
                 "mcp": worker["mcp"] if worker["provider"] in ("codex", "claude") else None,
+                "claudeSkills": worker["claudeSkills"] if worker["provider"] == "claude" else None,
                 "idleTimeoutSeconds": worker["idleTimeoutSeconds"],
                 "telemetry": {
                     "tokenUsage": PROVIDER_CAPABILITIES.get(worker["provider"], {}).get(

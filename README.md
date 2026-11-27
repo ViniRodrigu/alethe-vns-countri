@@ -12,7 +12,7 @@
 
   <p align="center">
     <a href="https://github.com/Kc1t/alethe-orchestrate-skill/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Kc1t/alethe-orchestrate-skill/actions/workflows/ci.yml/badge.svg"></a>
-    <a href="./CHANGELOG.md"><img alt="Skill version" src="https://img.shields.io/badge/skill-v24-4f46e5?style=flat-square"></a>
+    <a href="./CHANGELOG.md"><img alt="Skill version" src="https://img.shields.io/badge/skill-v25-4f46e5?style=flat-square"></a>
     <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square"></a>
     <img alt="Python 3.9+ optional" src="https://img.shields.io/badge/python-3.9%2B%20optional-3776ab?style=flat-square&logo=python&logoColor=white">
     <img alt="Windows, macOS and Linux" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-555?style=flat-square">
@@ -22,23 +22,32 @@
   <p align="center"><b>English</b> · <a href="./README.pt-BR.md">Português (BR)</a></p>
 </div>
 
-## Install
+## Install in Claude Code
 
-```sh
-npx skills add Kc1t/alethe-orchestrate-skill
+From the root of a checkout or extracted release bundle, run:
+
+```powershell
+claude plugin install alethe-orchestrate --marketplace "$($PWD.Path)"
 ```
+
+Once the repository is on GitHub, install directly from its default branch.
+
+```powershell
+claude plugin install alethe-orchestrate --marketplace ViniRodrigu/alethe-vns-countri
+```
+
+Keep the extracted directory in place when installing from a local marketplace.
+Run `claude plugin list` and look for `alethe-orchestrate@alethe-vns-countri` version
+`25.0.0`. Open a new Claude Code session and run `/alethe setup`. The Python runner requires
+Python 3.9 or later. See the optional [Superpowers](skills/alethe/references/providers.md#claude-code-skills)
+and [FreeLLMAPI](skills/alethe/references/freellmapi.md) setup.
 
 <details>
-<summary>Claude Code plugin, Codex plugin or by hand</summary>
-
-```text
-/plugin marketplace add Kc1t/alethe-orchestrate-skill
-/plugin install alethe-orchestrate@alethe
-```
+<summary>Install the fork in Codex or by hand</summary>
 
 ```sh
-codex plugin marketplace add Kc1t/alethe-orchestrate-skill
-codex plugin add alethe-orchestrate@alethe
+codex plugin marketplace add ViniRodrigu/alethe-vns-countri
+codex plugin add alethe-orchestrate@alethe-vns-countri
 ```
 
 Or copy `skills/alethe` into `~/.claude/skills/`, `~/.codex/skills/` or

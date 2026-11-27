@@ -1,12 +1,12 @@
 {
-  "name": "alethe",
+  "name": "alethe-vns-countri",
   "interface": {
     "displayName": "Alethe"
   },
   "plugins": [
     {
       "name": "alethe-orchestrate",
-      "version": "24.0.0",
+      "version": "25.0.0",
       "description": "Orchestrate CLI agents with playbooks that save context and quota, and report what each run did and cost.",
       "source": {
         "source": "local",

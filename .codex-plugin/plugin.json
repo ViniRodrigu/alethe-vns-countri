@@ -1,13 +1,13 @@
 {
   "name": "alethe-orchestrate",
-  "version": "24.0.0",
+  "version": "25.0.0",
   "description": "Plan with your agent and hand bounded work to Codex, Claude Code, Antigravity, Kimi or any CLI agent, following playbooks that save context and quota, then report what each run did and cost.",
   "author": {
     "name": "Kauã Miguel",
     "url": "https://github.com/Kc1t"
   },
-  "homepage": "https://github.com/Kc1t/alethe-orchestrate-skill",
-  "repository": "https://github.com/Kc1t/alethe-orchestrate-skill",
+  "homepage": "https://github.com/ViniRodrigu/alethe-vns-countri",
+  "repository": "https://github.com/ViniRodrigu/alethe-vns-countri",
   "license": "MIT",
   "skills": "./skills/",
   "interface": {

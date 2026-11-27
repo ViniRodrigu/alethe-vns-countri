@@ -3,6 +3,15 @@
 The version is the integer in `skills/alethe/SKILL.md` under `metadata.version`.
 Alethe installs and updates the skill by that number.
 
+## 25
+
+- Use the independent `alethe-vns-countri` marketplace ID for this fork.
+
+- Add an opt-in FreeLLMAPI proposal adapter for the local runner's custom workers, including
+  reported token usage and a documented reassignment flow.
+- Local Claude workers can opt in to installed skills and slash commands with `claudeSkills`.
+  User settings and the nested-agent restrictions still apply.
+
 ## 24 (2026-11-04)
 
 Fixed:

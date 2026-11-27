@@ -97,6 +97,27 @@ failure, surfaced in `outcome.json`.
 
 ## Route by requirements
 
+For an external proposal worker, estimate the full input and expected output against the
+configured model's context and output limits. A complex investigation can be a bounded unit if
+it has a clear deliverable and credible acceptance checks. Prefer the capable configured route
+when the user has authorized sharing the exact selected context and the expected review and
+repair cost makes delegation worthwhile.
+
+Pass the approved excerpts or sanitized logs with the brief. File paths alone cannot supply
+context to a remote model without checkout access. Ask for a short conclusion, evidence with
+file references, a patch when applicable, and uncertainties. Keep logs on disk and inspect only
+the parts needed for review. Check patches and execute acceptance tests in the authorized local
+checkout. On a failed proposal, use the existing outcome and follow-up wave to record one
+targeted correction or reassignment within the orchestration budget.
+
+The offline proposal pilot exercises this handoff through the existing custom CLI adapter.
+From the repository root, run
+`python -m unittest discover -s tests -p test_orchestrate.py -k proposal_pilot -v`.
+The first simulated executor returns a rate limit. A second executor returns a patch for a
+normalization bug. The lead validates the patch locally and verifies that the failing acceptance
+check passes after application. This fixture supplies deterministic responses and has no model
+telemetry.
+
 Use this order:
 
 1. Honor a provider or model explicitly requested by the user unless the user also enabled
