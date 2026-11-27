@@ -165,7 +165,7 @@ class PlaybookSettingsTest(unittest.TestCase):
 
     def test_profile_provider_order_is_resolved(self):
         self.write_playbooks(self.bundled.replace("    name: Base", "    order: [codex]\n    name: Base"))
-        self.assertEqual(runner.playbook_settings(self.policy)["providers"], ["codex", "claude"])
+        self.assertEqual(runner.playbook_settings(self.policy)["providers"], ["codex", "claude", "agy"])
 
     def test_all_three_tiers_resolve_from_bundled_playbooks(self):
         for tier, model, effort in (("cheap", "haiku", "low"), ("standard", "sonnet", "medium"), ("strong", "opus", "high")):
@@ -214,11 +214,12 @@ class PlaybookSettingsTest(unittest.TestCase):
                 code, output, errors = self.call(command, path, "--policy", self.policy)
                 self.assertEqual(code, 0, errors)
                 warnings = json.loads(output)["warnings"]
-                for worker in raw["workers"]:
-                    self.assertIn(
-                        f"{worker['id']} runs on {worker['provider']}'s default model, which may be its most expensive; set a tier or a model",
-                        warnings,
-                    )
+                self.assertIn(
+                    "build runs on codex's default model, which may be its most expensive; set a tier or a model",
+                    warnings,
+                )
+                # Antigravity now has bundled tiers, so its worker gets a pinned model.
+                self.assertFalse([warning for warning in warnings if "agy's default model" in warning])
         self.assertFalse(runner.plan_warnings(self.resolve(self.plan())))
 
     def test_invalid_user_copy_is_refused_before_validate_dry_run_or_run(self):
@@ -279,7 +280,7 @@ class PlaybookSettingsTest(unittest.TestCase):
         self.assertEqual(code, 0, errors)
         payload = json.loads(output)
         self.assertEqual(payload["profile"], "base")
-        self.assertEqual(payload["providers"], ["claude", "codex"])
+        self.assertEqual(payload["providers"], ["claude", "codex", "agy"])
         self.assertEqual(len(payload["pickOrder"]), 11)
         self.assertEqual({item["id"] for item in payload["playbooks"]}, set(runner.playbook_settings(self.policy)["playbooks"]))
         self.assertTrue(all(set(item) == {"id", "name", "pickWhen"} for item in payload["playbooks"]))

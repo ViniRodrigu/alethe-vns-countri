@@ -886,3 +886,60 @@ class OperatorGuardTest(Fixtures):
                 code, _, err = self.run_plan("invalid", [worker])
                 self.assertNotEqual(code, 0)
                 self.assertIn(message, err)
+
+
+class AntigravityModelsTest(Fixtures):
+    LISTING = (
+        "gemini-4-hydrogen-high\tGemini 4 Hydrogen (High)\n"
+        "gemini-3.8-flash-low\tGemini 3.8 Flash (Low)\n"
+        "claude-opus-4-6-thinking\tClaude Opus 4.6 (Thinking)\n"
+        "gpt-oss-120b-medium\tGPT-OSS 120B (Medium)\n"
+    )
+
+    def test_agy_models_lines_are_parsed(self):
+        models = orchestrate.parse_agy_models("Fetching available models...\n" + self.LISTING)
+        self.assertEqual([entry["id"] for entry in models], [
+            "gemini-4-hydrogen-high", "gemini-3.8-flash-low", "claude-opus-4-6-thinking", "gpt-oss-120b-medium"])
+        self.assertEqual(models[0]["name"], "Gemini 4 Hydrogen (High)")
+
+    def test_agy_is_found_outside_path(self):
+        home = self.root / "user"
+        binary = home / ".gemini" / "bin" / ("agy.exe" if os.name == "nt" else "agy")
+        binary.parent.mkdir(parents=True)
+        binary.write_text("", encoding="utf-8")
+        binary.chmod(0o755)
+        with mock.patch.object(orchestrate.shutil, "which", return_value=None), \
+                mock.patch.object(orchestrate.Path, "home", return_value=home):
+            self.assertEqual(orchestrate.find_executable("agy"), str(binary.resolve()))
+            self.assertEqual(orchestrate.resolve_executable("agy"), str(binary.resolve()))
+            self.assertIsNone(orchestrate.find_executable("kimi"))
+
+    def test_third_party_quota_follows_the_model_family(self):
+        windows = lambda model: orchestrate.worker_windows({"provider": "agy", "model": model})
+        self.assertEqual(windows("gpt-oss-120b-medium"), ("3p-5h", "3p-week"))
+        self.assertEqual(windows("claude-sonnet-4-6"), ("3p-5h", "3p-week"))
+        self.assertEqual(windows("gemini-3.8-flash-low"), orchestrate.MAIN_QUOTA_WINDOWS)
+        self.assertIn("argon", windows("gemini-4-argon"))
+
+    def test_agy_usage_counts_thinking_as_output_and_cache_once(self):
+        inside = {"input_tokens": 1000, "output_tokens": 50, "thinking_tokens": 200, "cache_read_tokens": 600, "total_tokens": 1250}
+        self.assertEqual(orchestrate.normalized_usage(inside),
+                         {"inputTokens": 400, "cacheReadTokens": 600, "cacheWriteTokens": 0, "outputTokens": 250})
+        apart = {**inside, "total_tokens": 1850}
+        self.assertEqual(orchestrate.normalized_usage(apart)["inputTokens"], 1000)
+
+    def test_refresh_caches_the_list_and_models_marks_availability(self):
+        fake = self.root / "agy.py"
+        fake.write_text(f"import sys\nsys.stderr.write('Fetching available models...\\n')\nprint({self.LISTING!r}, end='')\n", encoding="utf-8")
+        with mock.patch.object(orchestrate, "resolve_executable", return_value="agy"), \
+                mock.patch.object(orchestrate, "launch_command", return_value=[sys.executable, str(fake)]):
+            code, out, err = self.call("models", "--refresh-agy", "--policy", self.policy)
+        self.assertEqual(code, 0, err)
+        agy = json.loads(out)["providers"]["agy"]
+        self.assertEqual(agy["discovered"]["count"], 4)
+        listed = {entry["model"]: entry for entry in agy["models"]}
+        self.assertTrue(listed["gemini-4-hydrogen-high"]["available"])
+        self.assertEqual(listed["gpt-oss-120b-medium"]["quotaGroup"], "3p")
+        self.assertFalse(listed["gemini-2.5-pro"]["available"])
+        cached = json.loads((self.policy.parent / "agy-models.json").read_text(encoding="utf-8"))
+        self.assertEqual(cached["source"], "agy models")

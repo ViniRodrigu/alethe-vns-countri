@@ -13,6 +13,10 @@ Alethe installs and updates the skill by that number.
 - FreeLLMAPI guidance now routes only verifiable chores to free models and keeps planning,
   debugging, integration and framework API work with paid models.
 - The FreeLLMAPI adapter reports a timeout as a timeout on Python 3.9 and on Windows.
+- Antigravity: the runner finds `agy` in `~/.gemini/bin` when it is not on PATH, and
+  `models --refresh-agy` reads the account's models from `agy models`. Bundled tiers and
+  profiles now pin Gemini slugs for agy, passive mode may delegate to it, the third-party quota
+  is chosen by model family, and thinking and cache-read tokens are counted.
 
 ## 25
 

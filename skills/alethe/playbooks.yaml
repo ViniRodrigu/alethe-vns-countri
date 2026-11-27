@@ -20,18 +20,22 @@ principles:
   - Cheap models triage and skip; judging whether code is correct takes the standard tier or above.
   - A risky unit never runs on the cheap tier, and its diff goes through review-gate.
 
-providers: [claude, codex]
+providers: [claude, codex, agy]
 
 tiers:
+  # Antigravity bakes the thinking level into Gemini slugs; `orchestrate.py models --refresh-agy` lists yours.
   cheap:
     claude: { model: haiku, effort: low }
     codex: { effort: low }
+    agy: { model: gemini-3.8-flash-low }
   standard:
     claude: { model: sonnet, effort: medium }
     codex: { effort: medium }
+    agy: { model: gemini-3.8-flash-high }
   strong:
     claude: { model: opus, effort: high }
     codex: { effort: high }
+    agy: { model: gemini-4-hydrogen-high }
 
 quota:
   criticalThreshold: 80
@@ -46,7 +50,7 @@ quota:
 passive:
   checkEveryMinutes: 15
   spendStepUsd: 5
-  prefer: [codex, claude]
+  prefer: [codex, claude, agy]
   askAboveWorkers: 2
 
 budget:
@@ -66,9 +70,11 @@ profiles:
       standard:
         claude: { model: haiku, effort: medium }
         codex: { effort: low }
+        agy: { model: gemini-3.8-flash-medium }
       strong:
         claude: { model: sonnet, effort: high }
         codex: { effort: medium }
+        agy: { model: gemini-4-hydrogen-medium }
   aggressive:
     name: Aggressive
     summary: One step stronger on every tier, spending more of each window before switching.
@@ -77,9 +83,11 @@ profiles:
       cheap:
         claude: { model: sonnet, effort: low }
         codex: { effort: medium }
+        agy: { model: gemini-3.8-flash-high }
       standard:
         claude: { model: opus, effort: medium }
         codex: { effort: high }
+        agy: { model: gemini-4-hydrogen-medium }
 
 pickOrder:
   - { when: "Narrow, clear task touching up to about 3 files", playbook: direct }
