@@ -3,7 +3,7 @@ name: alethe
 description: Orchestrate bounded Codex, Claude Code, Agy, Kimi, or custom CLI workers to finish work with the least lead context and provider usage, following playbooks such as plan big, execute small. Use when the user asks to orchestrate, delegate, compare agents, conserve agent tokens or quota, recover a worker, report what an orchestration did and cost, or work without MCP or Python, when the user types /alethe or a short command such as "alethe report" or "alethe stop", and when they want it on from now on, at any point of a task and alongside other skills. Also use it proactively, without being asked, when a request is large enough to split into bounded independent units, such as a multi-file refactor, a migration, an audit or research across many files. Default passive mode watches session spend and quota and delegates cheaper bounded units; spend reports the lead session. Keep small work with the lead.
 argument-hint: "[task or standing instruction] | on | off | passive | spend | save | max | freestyle | careful | report | status | usage | models | editor | list | stop | clean | skip <phase> | switch <playbook> | freeform | budget <limit> | mark <worker> <used|partial|discarded> | setup | help"
 metadata:
-  version: "26"
+  version: "27"
 ---
 
 # Orchestrate CLI workers

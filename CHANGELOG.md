@@ -3,6 +3,11 @@
 The version is the integer in `skills/alethe/SKILL.md` under `metadata.version`.
 Alethe installs and updates the skill by that number.
 
+## 27
+
+- Passive mode tells the lead to run the runner with the interpreter that ran the hook, not a
+  bare `python3`, which on Windows is often the Microsoft Store stub.
+
 ## 26
 
 - Operator guards for write workers: `allowedPaths` and `forbiddenPaths` fail a unit with
