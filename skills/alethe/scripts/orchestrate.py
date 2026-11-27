@@ -5123,9 +5123,17 @@ def passive_spend_line(payload: Dict[str, Any], quota_text: str) -> str:
             f"{payload['delegatedRuns']} delegated runs. {quota_text}")
 
 
+def python_command() -> str:
+    """The interpreter running this hook; on Windows `python3` is often the Microsoft Store stub."""
+    executable = sys.executable
+    if not executable or not Path(executable).is_file():
+        return "python3"
+    return f'"{executable}"' if re.search(r"\s", executable) else executable
+
+
 def passive_brief(settings: Dict[str, Any]) -> str:
     return (
-        f"Use the alethe skill; commands: python3 \"{Path(__file__).resolve()}\" <command>. "
+        f"Use the alethe skill; commands: {python_command()} \"{Path(__file__).resolve()}\" <command>. "
         "Alethe passive: work normally, without a playbook/plan/waves unless asked. Autonomously delegate cheaper "
         "bounded scouting, checked edits, tests or finished-diff reviews; keep small/ambiguous/design/coupled "
         "work and integration. Honor billing/passive.prefer: Codex first with fresh 5h/week below "

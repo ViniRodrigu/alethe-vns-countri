@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -347,6 +348,14 @@ class PassiveTest(unittest.TestCase):
         self.assertIn("alethe skill", brief)
         self.assertIn(str(SCRIPT.resolve()), brief)
         self.assertLessEqual(len(brief.split()), 87 + 25)
+
+    def test_passive_brief_names_the_running_interpreter(self):
+        self.assertIn(f"commands: {sys.executable} ", r.passive_brief(r.PASSIVE_DEFAULTS))
+        spaced = str(Path(sys.executable).parent / "Program Files" / "python.exe")
+        with mock.patch.object(r.sys, "executable", spaced), mock.patch.object(r.Path, "is_file", return_value=True):
+            self.assertEqual(r.python_command(), f'"{spaced}"')
+        with mock.patch.object(r.sys, "executable", ""):
+            self.assertEqual(r.python_command(), "python3")
 
     def response(self, identity="a", model="claude-opus-5-5", input_tokens=100,
                  output_tokens=10, cache_read_input_tokens=900, cache_creation_input_tokens=20, **fields):
