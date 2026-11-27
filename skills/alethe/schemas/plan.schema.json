@@ -89,6 +89,11 @@
           "description": "Allow skills and slash commands from user settings on an explicit Claude worker."
         },
         "idleTimeoutSeconds": { "type": "integer", "minimum": 5, "maximum": 86400 },
+        "requires": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Programs the unit needs, such as php or npm. The runner fails the unit with failureKind environment before it starts when one is not on PATH, and warns in dry runs when the provider's sandbox could not reach one recently."
+        },
         "allowedPaths": {
           "type": "array",
           "minItems": 1,
