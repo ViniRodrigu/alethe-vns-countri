@@ -3,6 +3,20 @@
 The version is the integer in `skills/alethe/SKILL.md` under `metadata.version`.
 Alethe installs and updates the skill by that number.
 
+## 28
+
+- `failureKind: environment` and `environmentIssue` for a program that is missing or denied where
+  the worker runs, with a hint to fix the machine or move only that unit. `requires` checks
+  programs before a worker starts, and `provider-limits.json` makes dry runs warn when a
+  provider's sandbox could not reach one recently.
+- Acceptance checks refuse `| & < > ^ % !` and quotes in arguments to `cmd`, `.cmd` and `.bat`,
+  which cmd.exe would run as shell syntax.
+- A read-only worker that writes fails with `read_only_violation`, and the runner reverts what it
+  changed in files that were clean, keeping a copy.
+- State and report reads retry when Windows briefly locks a file being replaced.
+- Hook output is written as UTF-8 on Windows.
+- Dry runs warn when a read-only Antigravity worker is asked to run commands.
+
 ## 27
 
 - Passive mode tells the lead to run the runner with the interpreter that ran the hook, not a

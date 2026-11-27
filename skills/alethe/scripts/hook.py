@@ -119,7 +119,14 @@ def main() -> int:
     try:
         stream = getattr(sys.stdin, "buffer", None)
         text = stream.read().decode("utf-8", errors="replace") if stream is not None else sys.stdin.read()
-        print(hook_output(text), end="")
+        output = hook_output(text)
+        # Claude Code reads hook output as UTF-8; cp1252 on Windows mangles or drops it.
+        out = getattr(sys.stdout, "buffer", None)
+        if out is None:
+            sys.stdout.write(output)
+        else:
+            out.write(output.encode("utf-8"))
+            out.flush()
     except Exception:
         pass
     return 0

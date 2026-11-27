@@ -229,6 +229,8 @@ FAILURE_HINTS = {
     "invalid_output": "its output did not parse; check stderr.log and the CLI version",
     "acceptance_failed": "the acceptance check failed; retry once with acceptance.tail pasted into the brief, then move the unit to a stronger provider",
     "scope_violation": "it changed files outside allowedPaths, a forbidden path or a junk name; discard the worktree and narrow the brief",
+    "environment": "a tool it needs is missing or blocked where it runs; fix the environment or route only this unit elsewhere, and keep the other units on alethe instead of moving everything to the lead",
+    "read_only_violation": "it wrote files while read-only; the runner reverted them and saved them in readonly-violation.patch",
 }
 # Paths an operator worker with allowedPaths may never change unless the plan names them literally.
 DEFAULT_FORBIDDEN_PATHS = (
@@ -240,10 +242,25 @@ DEFAULT_FORBIDDEN_PATHS = (
 DEFAULT_FROZEN_PATHS = ("database/migrations/**", "migrations/**")
 ACCEPTANCE_TAIL_CHARS = 4000
 DEFAULT_ACCEPTANCE_TIMEOUT = 600
+# A tool the unit needs is missing or unreachable where the worker runs (often a provider sandbox).
+ENVIRONMENT_PROBLEM = re.compile(
+    r"is not recognized as an internal or external command|n[aã]o [eé] reconhecido como um comando"
+    r"|command not found|: not found\b|\bAccess is denied\b|\bAcesso negado\b|exit(?:ed)? (?:code |status |with status )?9009\b"
+    r"|CreateProcess\w* failed|cannot find the (?:file|path) specified",
+    re.IGNORECASE,
+)
+PROVIDER_LIMITS_FILE = "provider-limits.json"
+AGY_COMMAND_REQUEST = re.compile(
+    r"\b(?:run|execute|rode|rodar|execut[ae]r?)\b[^.\n]{0,60}\b(?:tests?|testes?|commands?|comandos?|scripts?|checks?|lint)\b"
+    r"|\b(?:php artisan|composer|npm|pnpm|yarn|pytest|phpunit|pest|vendor/bin/|cargo|go test)\b",
+    re.IGNORECASE,
+)
+PROVIDER_LIMIT_DAYS = 7
 ERROR_LINE = re.compile(r"\berror\b|\bfailed\b|denied|forbidden|exception|\b4\d\d\b|\b5\d\d\b", re.IGNORECASE)
 FAILURE_PATTERNS = (
     ("timed_out", re.compile(r"\bFreeLLMAPI request timed out\b")),
     ("invalid_output", re.compile(r"\bFreeLLMAPI returned an invalid, incomplete or oversized proposal\b")),
+    ("environment", ENVIRONMENT_PROBLEM),
     ("permission_denied", re.compile(r"permission denied|denied actions?", re.IGNORECASE)),
     ("rate_limited", re.compile(r"\b429\b|rate.?limit|usage limit|quota|too many requests|hit your (?:\w+ )?limit", re.I)),
     (
@@ -299,9 +316,21 @@ def atomic_write_json(path: Path, value: Any) -> None:
     atomic_write_text(path, json.dumps(value, indent=2, ensure_ascii=False) + "\n")
 
 
+def read_text_retrying(path: Path) -> str:
+    """Windows refuses a read while another process swaps the file in with os.replace."""
+    for attempt in range(ATOMIC_REPLACE_ATTEMPTS):
+        try:
+            return path.read_text(encoding="utf-8")
+        except PermissionError:
+            if attempt == ATOMIC_REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(ATOMIC_REPLACE_BACKOFF_SECONDS * (2 ** attempt))
+    raise AssertionError("unreachable")
+
+
 def read_json(path: Path) -> Any:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(read_text_retrying(path))
     except OSError as error:
         raise PlanError(f"cannot read {path}: {error}") from error
     except json.JSONDecodeError as error:
@@ -310,7 +339,7 @@ def read_json(path: Path) -> Any:
 
 def read_optional_json(path: Path) -> Any:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(read_text_retrying(path))
     except (OSError, json.JSONDecodeError):
         return None
 
@@ -1694,8 +1723,13 @@ def preview_usage_cost(workers: Sequence[Dict[str, Any]], policy_path: Path) -> 
     warnings = []
     estimates = []
     listed_agy = cached_agy_models(policy_path)
+    limits = recent_provider_limits(policy_path)
     for worker in workers:
         provider = worker["provider"]
+        blocked = [tool for tool in worker.get("requires") or [] if tool in limits.get(provider, {})]
+        if blocked:
+            warnings.append(f"{worker['id']}: {provider} could not reach {', '.join(blocked)} in a recent run "
+                            f"({limits[provider][blocked[0]]['evidence'][:100]}); fix that or route this unit to another provider")
         if provider == "agy" and worker.get("model") and listed_agy and worker["model"] not in {
                 entry["id"] for entry in listed_agy["models"]}:
             warnings.append(f"{worker['id']}: agy model {worker['model']} is not in the last `agy models` list; "
@@ -2154,6 +2188,13 @@ def validate_acceptance(raw: Any, worker_id: str, mode: str) -> Optional[Dict[st
     args = raw.get("args", [])
     if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
         raise PlanError(f"{label}.args must be an array of strings")
+    if runs_through_cmd(command, args):
+        unsafe = [arg for arg in args if BATCH_UNSAFE.search(arg)]
+        if unsafe:
+            raise PlanError(
+                f"{label}: cmd.exe would treat {unsafe[0]!r} as shell syntax (| & < > ^ % ! or quotes); "
+                "call the real program instead, e.g. php with [\"artisan\", \"test\", \"--filter\", \"A|B\"]"
+            )
     cwd = raw.get("cwd")
     if cwd is not None:
         cwd = validate_relative_path(cwd, f"{label}.cwd")
@@ -2285,6 +2326,7 @@ def validate_plan(
             "allowedPaths",
             "forbiddenPaths",
             "acceptance",
+            "requires",
         }
         if unknown:
             raise PlanError(
@@ -2330,6 +2372,10 @@ def validate_plan(
             raise PlanError(f"worker {worker_id} seedPaths requires isolate")
         path_guard = validate_path_guard(item, worker_id, mode, isolate)
         acceptance = validate_acceptance(item.get("acceptance"), worker_id, mode)
+        requires = item.get("requires", [])
+        if not isinstance(requires, list) or not all(
+                isinstance(tool, str) and SAFE_NAME_PATTERN.fullmatch(tool) and not tool.startswith("-") for tool in requires):
+            raise PlanError(f"worker {worker_id}.requires must be an array of program names such as php or npm")
         model = optional_name(item.get("model"), f"worker {worker_id}.model")
         effort = optional_name(item.get("effort"), f"worker {worker_id}.effort")
         tier = item.get("tier", "standard")
@@ -2375,6 +2421,7 @@ def validate_plan(
             "idleTimeoutSeconds": idle_timeout,
             "pathGuard": path_guard,
             "acceptance": acceptance,
+            "requires": requires,
             "task": task,
             "trust": copy.deepcopy(policy["trust"]),
         }
@@ -2731,6 +2778,12 @@ def resolve_executable(name: str) -> str:
     return resolved
 
 
+def runs_through_cmd(command: str, args: Sequence[str] = ()) -> bool:
+    """True for a .cmd/.bat target or cmd.exe itself, whose arguments cmd re-parses."""
+    name = Path(command.replace("\\", "/")).name.lower()
+    return name in ("cmd", "cmd.exe") or name.endswith(BATCH_SUFFIXES)
+
+
 def is_batch_file(executable: str) -> bool:
     return os.name == "nt" and Path(executable).suffix.lower() in BATCH_SUFFIXES
 
@@ -2772,7 +2825,7 @@ def launch_command(executable: str) -> List[str]:
 
 
 def refuse_batch_arguments(args: Sequence[str]) -> None:
-    if not is_batch_file(args[0]):
+    if not (is_batch_file(args[0]) or (os.name == "nt" and Path(args[0]).name.lower() in ("cmd", "cmd.exe"))):
         return
     if any(BATCH_UNSAFE.search(arg) for arg in args[1:]):
         raise PlanError(
@@ -3902,6 +3955,65 @@ class BudgetTracker:
             return self.usage_snapshot()
 
 
+def environment_issue(*texts: Optional[str]) -> Optional[str]:
+    for text in texts:
+        for line in (text or "").splitlines():
+            if ENVIRONMENT_PROBLEM.search(line):
+                return line.strip()[:300]
+    return None
+
+
+def provider_limits_path(policy_path: Path) -> Path:
+    return policy_path.parent / PROVIDER_LIMITS_FILE
+
+
+def record_provider_limit(policy_path: Path, provider: str, tools: Sequence[str], evidence: str) -> None:
+    """Remember that a provider's sandbox could not reach a tool, so later plans route around it."""
+    path = provider_limits_path(policy_path)
+    data = read_optional_json(path)
+    data = data if isinstance(data, dict) and isinstance(data.get("providers"), dict) else {"version": 1, "providers": {}}
+    entry = data["providers"].setdefault(provider, {})
+    for tool in tools:
+        entry[tool] = {"seenAt": now_iso(), "evidence": evidence}
+    atomic_write_json(path, data)
+
+
+def recent_provider_limits(policy_path: Path, now: Optional[dt.datetime] = None) -> Dict[str, Dict[str, Any]]:
+    data = read_optional_json(provider_limits_path(policy_path))
+    if not isinstance(data, dict) or not isinstance(data.get("providers"), dict):
+        return {}
+    current = now or dt.datetime.now(dt.timezone.utc)
+    recent: Dict[str, Dict[str, Any]] = {}
+    for provider, tools in data["providers"].items():
+        for tool, entry in (tools.items() if isinstance(tools, dict) else []):
+            seen = timestamp(entry.get("seenAt")) if isinstance(entry, dict) else None
+            if seen is not None and current - seen < dt.timedelta(days=PROVIDER_LIMIT_DAYS):
+                recent.setdefault(provider, {})[tool] = entry
+    return recent
+
+
+def revert_read_only_changes(root: Path, before: Dict[str, str], after: Dict[str, str], worker_dir: Path) -> List[str]:
+    """Undo what a read-only worker wrote to paths that were clean when it started; keep a copy first."""
+    changed = [path for path in changed_paths(before, after) if path not in before]
+    if not changed:
+        return []
+    tracked = [path for path in changed if not after.get(path, "").startswith("??")]
+    untracked = [path for path in changed if after.get(path, "").startswith("??")]
+    if tracked:
+        patch = run_git(root, ["diff", "--binary", "HEAD", "--", *tracked])
+        (worker_dir / "readonly-violation.patch").write_bytes(patch)
+        run_git(root, ["checkout", "HEAD", "--", *tracked])
+    kept = worker_dir / "readonly-violation"
+    for path in untracked:
+        source = root / path
+        if source.is_file() and not source.is_symlink():
+            target = kept / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+            source.unlink()
+    return changed
+
+
 def run_worker(
     worker: Dict[str, Any],
     run_id: str,
@@ -3956,6 +4068,8 @@ def run_worker(
         "sharedCheckoutWith": [],
         "scopeViolations": None,
         "acceptance": None,
+        "environmentIssue": None,
+        "revertedFiles": None,
     }
 
     def settle(**fields: Any) -> Dict[str, Any]:
@@ -3978,6 +4092,12 @@ def run_worker(
     if (run_dir / STOP_FILE).exists():
         tracker.finish(worker_id, {})
         return settle(status="skipped", error="stopped on request", failureKind="stopped")
+    missing = [tool for tool in worker.get("requires") or [] if find_executable(tool) is None]
+    if missing:
+        tracker.finish(worker_id, {})
+        return settle(status="failed", failureKind="environment",
+                      error=f"required program not found on PATH: {', '.join(missing)}",
+                      environmentIssue=f"missing on the host: {', '.join(missing)}")
     if not state.value.get("allowLowQuota"):
         try:
             quota_stop = quota_refusal([worker], Path(state.value["policyPath"]))
@@ -4095,6 +4215,14 @@ def run_worker(
                 touched = changed_paths(before, after)[:MAX_LISTED_PATHS]
                 if worker["mode"] == "read-only":
                     violation = bool(touched)
+                    if violation:
+                        try:
+                            reverted = revert_read_only_changes(root, before, after, worker_dir)[:MAX_LISTED_PATHS]
+                        except (OSError, PlanError) as revert_error:
+                            reverted, error = [], f"{error + '; ' if error else ''}could not revert read-only writes: {revert_error}"
+                        outcome["revertedFiles"] = reverted
+                        status, kind, reset_hint = "failed", "read_only_violation", None
+                        error = error or "wrote files while read-only: " + ", ".join(touched[:5])
                 else:
                     diff_paths = []
                     if diff_path is not None:
@@ -4102,6 +4230,18 @@ def run_worker(
                             "utf-8", errors="surrogateescape"
                         ).split("\0")
                     dirty_before = sorted(set(before).intersection(diff_paths))[:MAX_LISTED_PATHS]
+        issue = environment_issue(error, tail_text(stderr_path, 40), result_text)
+        if issue:
+            outcome["environmentIssue"] = issue
+            if kind in (None, "error") and status != "succeeded":
+                kind = "environment"
+            needed = [tool for tool in worker.get("requires") or [] if tool.lower() in issue.lower()] or list(
+                worker.get("requires") or [])
+            if needed:
+                try:
+                    record_provider_limit(Path(state.value["policyPath"]), worker["provider"], needed, issue)
+                except (OSError, PlanError, KeyError):
+                    pass
         tracker.finish(worker_id, metrics)
         return settle(
             status=status,
@@ -5196,6 +5336,17 @@ def passive_hook(event: Dict[str, Any], cwd: Path, mode: Dict[str, Any], now: fl
     return output + "\n"
 
 
+def write_utf8(text: str) -> None:
+    """Claude Code reads hook output as UTF-8; a Windows console code page would mangle or drop it."""
+    stream = getattr(sys.stdout, "buffer", None)
+    if stream is None:
+        sys.stdout.write(text)
+        return
+    sys.stdout.flush()
+    stream.write(text.encode("utf-8"))
+    stream.flush()
+
+
 def task_text(worker: Dict[str, Any]) -> str:
     return worker["task"].split("\n\nRuntime contract:", 1)[0]
 
@@ -5230,6 +5381,9 @@ def plan_warnings(plan: Dict[str, Any]) -> List[str]:
         )
     for worker in workers:
         name = worker["id"]
+        if worker["provider"] == "agy" and worker["mode"] == "read-only" and AGY_COMMAND_REQUEST.search(task_text(worker)):
+            warnings.append(f"{name}: a read-only agy worker cannot run shell commands; give it the output as a file "
+                            "or use Codex or Claude")
         if worker["provider"] == "agy" and worker["idleTimeoutSeconds"] is not None:
             warnings.append(f"{name}: agy only emits JSON at completion; idleTimeoutSeconds is ignored")
         custom_args = worker.get("args", []) if worker["provider"] == "custom" else []
@@ -5556,6 +5710,7 @@ def plan_payload(
                 "mcp": worker["mcp"] if worker["provider"] in ("codex", "claude") else None,
                 "claudeSkills": worker["claudeSkills"] if worker["provider"] == "claude" else None,
                 "idleTimeoutSeconds": worker["idleTimeoutSeconds"],
+                "requires": worker.get("requires") or [],
                 "telemetry": {
                     "tokenUsage": PROVIDER_CAPABILITIES.get(worker["provider"], {}).get(
                         "tokenUsage", False
@@ -5767,6 +5922,8 @@ def collect_run(run_dir: Path) -> Dict[str, Any]:
                 "billedModels": list(outcome.get("billedModels") or []),
                 "readOnlyViolation": outcome.get("readOnlyViolation"),
                 "touchedFiles": outcome.get("touchedFiles"),
+                "environmentIssue": outcome.get("environmentIssue"),
+                "revertedFiles": outcome.get("revertedFiles"),
                 "dirtyBefore": outcome.get("dirtyBefore"),
                 "costCapUsd": number(outcome.get("costCapUsd")),
                 "diffError": outcome.get("diffError"),
@@ -5819,6 +5976,8 @@ def concerns(worker: Dict[str, Any]) -> List[str]:
     if worker["readOnlyViolation"]:
         touched = list(worker["touchedFiles"] or [])[:5]
         reasons.append(f"it changed the checkout while read-only ({listed(touched)})")
+    if worker.get("environmentIssue"):
+        reasons.append(f"its environment blocked it ({worker['environmentIssue'][:120]}); fix that or move only this unit")
     if worker.get("quotaError"):
         reasons.append(f"quota cache failed: {worker['quotaError']}")
     denials = worker["permissionDenials"]
@@ -6871,7 +7030,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return 0
         if args.command == "hook":
             try:
-                print(hook_output(hook_stdin()), end="")
+                write_utf8(hook_output(hook_stdin()))
             except Exception:  # Even an unreadable stdin must leave the prompt unblocked.
                 pass
             return 0

@@ -328,7 +328,8 @@ Besides its status, error, session, metrics and diff, `outcome.json` carries:
 - `verdict`: a `VERDICT:` line of `PASS`, `FAIL` or `NOT_PROVEN`, which validator briefs ask for
   (see [briefs.md](briefs.md)).
 - `failureKind`: `rate_limited`, `auth_required`, `not_installed`, `timed_out`, `stalled`, `budget`,
-  `budget_exceeded`, `invalid_output`, `no_result`, `acceptance_failed`, `scope_violation` or `error`, read from the error and the end of
+  `budget_exceeded`, `invalid_output`, `no_result`, `acceptance_failed`, `scope_violation`, `environment`,
+  `read_only_violation` or `error`, read from the error and the end of
   the logs. `resetHint` keeps a reset time the CLI printed.
 - `permissionDenials` and `billedModels`: the tools Claude refused and the models it billed.
 - `readOnlyViolation` and `touchedFiles`: whether a read-only worker in a checkout changed it,
@@ -338,6 +339,8 @@ Besides its status, error, session, metrics and diff, `outcome.json` carries:
   started; its `diff.patch` includes them.
 - `costCapUsd`, `diffError` and `sharedCheckoutWith`.
 - `scopeViolations` and `acceptance`: see "Operator guards" below.
+- `environmentIssue`: the first log or result line showing a missing or denied program, and
+  `revertedFiles`: what the runner undid after a read-only worker wrote.
 
 ## Operator guards
 
@@ -455,6 +458,15 @@ narrower task or corrected invocation addresses a specific cause:
 - `acceptance_failed`: retry once with `acceptance.tail` pasted into a narrower brief; after a
   second failure, move the unit to a stronger provider.
 - `scope_violation`: discard the worktree. Narrow the brief or `allowedPaths`, or move the unit.
+- `environment` (or `environmentIssue` on a `BLOCKED` worker): a program is missing or denied where
+  the worker runs, for example `'php' is not recognized` or `Access is denied` inside the Codex
+  Windows sandbox. Another provider or a stronger tier fails the same way on the same machine, so
+  fix the environment or move only this unit; keep the other units delegated. The runner records
+  the provider and the `requires` entries it could not reach in `provider-limits.json`, next to
+  the policy, and dry runs warn for seven days.
+- `read_only_violation`: a read-only worker wrote to the checkout. The runner reverts files that
+  were clean when it started, saves tracked edits in `readonly-violation.patch` and new files under
+  `readonly-violation/`, and leaves files that were already dirty for you to inspect.
 
 A partial writer diff is untrusted until reviewed.
 

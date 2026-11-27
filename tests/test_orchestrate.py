@@ -473,12 +473,17 @@ class GuardTest(Fixtures):
             self.worker("honest", "read-only", ["say", "Read it."], "text", repo),
             self.worker("sneaky", "read-only", ["write", "new.txt"], "text", repo),
         ]
-        code, result, err, _ = self.run_plan("tripwire", workers, run_dir=repo / ".orchestration" / "01-read", maxConcurrent=1)
-        self.assertEqual(code, 0, err)
+        code, result, err, run_dir = self.run_plan("tripwire", workers, run_dir=repo / ".orchestration" / "01-read", maxConcurrent=1)
+        self.assertEqual(code, 1, err)
         outcomes = {item["id"]: item for item in result["workers"]}
         self.assertFalse(outcomes["honest"]["readOnlyViolation"])
         self.assertTrue(outcomes["sneaky"]["readOnlyViolation"])
         self.assertEqual(outcomes["sneaky"]["touchedFiles"], ["new.txt"])
+        self.assertEqual((outcomes["sneaky"]["status"], outcomes["sneaky"]["failureKind"]), ("failed", "read_only_violation"))
+        self.assertEqual(outcomes["sneaky"]["revertedFiles"], ["new.txt"])
+        self.assertFalse((repo / "new.txt").exists())
+        kept = run_dir / "workers" / "sneaky" / "readonly-violation" / "new.txt"
+        self.assertEqual(kept.read_text(encoding="utf-8"), "hello\nworld\n")
         report = json.loads(self.call("report", repo / ".orchestration", "--format", "json")[1])
         flagged = {item["worker"]: item for item in report["followUps"]["attention"]}
         self.assertIn("changed the checkout while read-only (new.txt)", flagged["sneaky"]["reasons"][0])
@@ -943,3 +948,99 @@ class AntigravityModelsTest(Fixtures):
         self.assertFalse(listed["gemini-2.5-pro"]["available"])
         cached = json.loads((self.policy.parent / "agy-models.json").read_text(encoding="utf-8"))
         self.assertEqual(cached["source"], "agy models")
+
+
+class WindowsFieldReportTest(Fixtures):
+    """Failures seen on a Windows machine with Herd PHP and a Codex sandbox."""
+
+    def run_plan(self, name, workers):
+        path = self.write_plan(name, {"version": 1, "workers": workers, "maxConcurrent": 1})
+        code, out, err = self.call("run", path, "--run-dir", self.root / f"run-{name}", "--policy", self.policy)
+        return code, (json.loads(out)["workers"] if out.strip() else None), err
+
+    def test_cmd_metacharacters_in_acceptance_are_refused_before_running(self):
+        repo = self.make_repo()
+        for command, args in (("cmd", ["/c", "accept.cmd", "DataIssue|TestDatabaseGuard"]),
+                              ("accept.cmd", ["DataIssue|TestDatabaseGuard"]), ("C:/tools/run.BAT", ["a&b"])):
+            with self.subTest(command=command):
+                worker = self.worker("op", "write", ["say", "x"], "text", repo, isolate=True,
+                                     acceptance={"command": command, "args": args})
+                code, _, err = self.run_plan("cmd", [worker])
+                self.assertNotEqual(code, 0)
+                self.assertIn("cmd.exe would treat", err)
+        safe = self.worker("op", "write", ["say", "x"], "text", repo, isolate=True,
+                           acceptance={"command": sys.executable, "args": ["-c", "import sys; sys.exit('A|B' != 'A|B')"]})
+        self.assertEqual(self.run_plan("safe", [safe])[0], 0)
+
+    def test_a_missing_required_program_fails_before_the_worker_starts(self):
+        worker = self.worker("needs", "read-only", ["say", "should not run"], "text", self.root,
+                             requires=["definitely-missing-tool-xyz"])
+        code, outcomes, _ = self.run_plan("requires", [worker])
+        self.assertEqual(code, 1)
+        self.assertEqual(outcomes[0]["failureKind"], "environment")
+        self.assertIn("definitely-missing-tool-xyz", outcomes[0]["error"])
+        self.assertIsNone(outcomes[0]["exitCode"])
+
+    def test_a_blocked_sandbox_is_recorded_and_warned_about_next_time(self):
+        said = ("'php' is not recognized as an internal or external command, operable program or batch file.\n"
+                "STATUS: BLOCKED\nSUMMARY: PHP is not reachable.")
+        worker = self.worker("tests", "read-only", ["say", said], "text", self.root, requires=["python3"])
+        with mock.patch.object(orchestrate, "find_executable", return_value="/usr/bin/python3"):
+            code, outcomes, err = self.run_plan("blocked", [worker])
+        self.assertEqual(code, 0, err)
+        self.assertIn("not recognized", outcomes[0]["environmentIssue"])
+        limits = json.loads((self.policy.parent / "provider-limits.json").read_text(encoding="utf-8"))
+        self.assertIn("python3", limits["providers"]["custom"])
+        report = json.loads(self.call("report", self.root / "run-blocked", "--format", "json")[1])
+        reasons = report["followUps"]["attention"][0]["reasons"]
+        self.assertTrue(any("environment blocked it" in reason for reason in reasons))
+        path = self.write_plan("again", {"version": 1, "workers": [worker]})
+        warnings = json.loads(self.call("dry-run", path, "--policy", self.policy)[1])["warnings"]
+        self.assertTrue(any("could not reach python3" in warning for warning in warnings))
+
+    def test_failed_worker_with_a_missing_command_is_an_environment_failure(self):
+        kind, _ = orchestrate.classify_failure("failed", "worker exited with status 1", self.root / "none.log",
+                                               "'php' não é reconhecido como um comando interno", False)
+        self.assertEqual(kind, "environment")
+
+    def test_read_only_worker_edits_to_tracked_files_are_reverted(self):
+        repo = self.make_repo()
+        worker = self.worker("docs", "read-only", ["write", "README.md"], "text", repo)
+        code, outcomes, _ = self.run_plan("tracked", [worker])
+        self.assertEqual(code, 1)
+        self.assertEqual(outcomes[0]["revertedFiles"], ["README.md"])
+        self.assertEqual((repo / "README.md").read_text(encoding="utf-8"), "base\n")
+        patch = (self.root / "run-tracked" / "workers" / "docs" / "readonly-violation.patch").read_text(encoding="utf-8")
+        self.assertIn("+hello", patch)
+
+    def test_state_reads_retry_while_windows_swaps_the_file(self):
+        path = self.root / "state.json"
+        path.write_text('{"ok": true}', encoding="utf-8")
+        real = Path.read_text
+        calls = []
+
+        def flaky(self_path, *args, **kwargs):
+            calls.append(self_path)
+            if len(calls) < 3:
+                raise PermissionError(13, "sharing violation")
+            return real(self_path, *args, **kwargs)
+
+        with mock.patch.object(orchestrate.Path, "read_text", flaky), mock.patch.object(orchestrate.time, "sleep"):
+            self.assertEqual(orchestrate.read_json(path), {"ok": True})
+        self.assertEqual(len(calls), 3)
+
+    def test_hook_text_is_written_as_utf8(self):
+        buffer = io.BytesIO()
+        stream = io.TextIOWrapper(buffer, encoding="cp1252")
+        with mock.patch.object(orchestrate.sys, "stdout", stream):
+            orchestrate.write_utf8("padrão → ok")
+        self.assertEqual(buffer.getvalue().decode("utf-8"), "padrão → ok")
+
+    def test_read_only_agy_asked_to_run_tests_gets_a_warning(self):
+        plan = {"workers": [{"id": "rev", "provider": "agy", "mode": "read-only", "idleTimeoutSeconds": None,
+                             "command": None, "model": "gemini-3.8-flash-low", "isolate": False, "mcp": False, "task": "Review the diff and rode os testes com php artisan test."}],
+                "budget": {}}
+        warnings = orchestrate.plan_warnings(plan)
+        self.assertTrue(any("cannot run shell commands" in warning for warning in warnings))
+        plan["workers"][0]["task"] = "Review the attached diff file and list the risks."
+        self.assertFalse(any("cannot run shell commands" in warning for warning in orchestrate.plan_warnings(plan)))

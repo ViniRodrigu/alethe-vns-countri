@@ -3,7 +3,7 @@ name: alethe
 description: Orchestrate bounded Codex, Claude Code, Agy, Kimi, or custom CLI workers to finish work with the least lead context and provider usage, following playbooks such as plan big, execute small. Use when the user asks to orchestrate, delegate, compare agents, conserve agent tokens or quota, recover a worker, report what an orchestration did and cost, or work without MCP or Python, when the user types /alethe or a short command such as "alethe report" or "alethe stop", and when they want it on from now on, at any point of a task and alongside other skills. Also use it proactively, without being asked, when a request is large enough to split into bounded independent units, such as a multi-file refactor, a migration, an audit or research across many files. Default passive mode watches session spend and quota and delegates cheaper bounded units; spend reports the lead session. Keep small work with the lead.
 argument-hint: "[task or standing instruction] | on | off | passive | spend | save | max | freestyle | careful | report | status | usage | models | editor | list | stop | clean | skip <phase> | switch <playbook> | freeform | budget <limit> | mark <worker> <used|partial|discarded> | setup | help"
 metadata:
-  version: "27"
+  version: "28"
 ---
 
 # Orchestrate CLI workers
@@ -363,7 +363,18 @@ For any write worker the lead will not fully review, set these on the worker in 
   `acceptance_failed` whatever `STATUS:` the worker reported, and `acceptance.tail` holds the end
   of the output for the retry brief.
 
-These checks run before the lead reads the diff, so a failed unit costs no review. See
+- `requires`: programs the unit needs, such as `["php"]`. A missing one fails the unit with
+  `failureKind: environment` before it starts.
+
+These checks run before the lead reads the diff, so a failed unit costs no review.
+
+When a unit fails with `failureKind: environment` or carries `environmentIssue` (for example the
+Codex sandbox cannot reach a PHP install), the problem is the machine, not the provider. Fix it or
+route only that unit to a provider that can reach the tool; keep the remaining units on Alethe
+instead of moving the whole task to the lead or to lead-session subagents. Dry runs warn when a
+provider could not reach a required program in the last seven days. On Windows, do not run an
+acceptance check through `cmd`, `.cmd` or `.bat` with `| & < > ^ % !` or quotes in its arguments:
+call the real program, such as `php` with `["artisan", "test", "--filter", "A|B"]`. See
 [operations.md](references/operations.md#operator-guards) for the fields in `outcome.json`.
 
 ## Worker contract
