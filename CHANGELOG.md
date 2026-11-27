@@ -3,6 +3,16 @@
 The version is the integer in `skills/alethe/SKILL.md` under `metadata.version`.
 Alethe installs and updates the skill by that number.
 
+## 29
+
+- While Claude is past `quota.criticalThreshold`, each prompt in passive and `on` modes says so,
+  names the providers with room, and with `providerSwitch: ask` tells the lead to ask the user
+  before the next dispatch. `on` modes now carry every provider's quota.
+- A `PreToolUse` hook on the Agent tool applies the new `policy.agentGuard` (`ask` by default,
+  `deny`, `warn` or `off`) to implementation subagents while Claude is critical, and reminds the
+  lead once per session to show which provider and model each unit uses.
+- The passive brief no longer suggests Claude subagents as the fallback when Claude is low.
+
 ## 28
 
 - `failureKind: environment` and `environmentIssue` for a program that is missing or denied where

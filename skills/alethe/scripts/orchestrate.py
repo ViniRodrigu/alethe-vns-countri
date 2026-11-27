@@ -54,6 +54,14 @@ MODE_GOALS = {
     "max": "get the most out of the available agents: parallel waves, strong reviewers and best-of-n on hard calls",
     "freestyle": "watch over cost and quota and suggest cheaper routes, without orchestrating",
 }
+# What the PreToolUse hook does when the lead starts an implementation Agent subagent while Claude,
+# which pays for every subagent, is past quota.criticalThreshold.
+AGENT_GUARD_MODES = ("ask", "deny", "warn", "off")
+AGENT_TOOLS = ("Agent", "Task")
+IMPLEMENTATION_AGENT = re.compile(
+    r"implement|coder|develop|engineer|fix|build|refactor|migrat|writer|edit|general-purpose|test-runner|spec-review",
+    re.IGNORECASE,
+)
 PASSIVE_DEFAULTS = {"checkEveryMinutes": 15, "spendStepUsd": 5, "prefer": ["codex", "claude", "agy"], "askAboveWorkers": 2}
 MODE_FREESTYLE = (
     "Work as usual, with no playbook, plan or waves. Check quota before long or heavy steps. When a "
@@ -162,6 +170,7 @@ DEFAULT_POLICY: Dict[str, Any] = {
     "backend": "auto",
     "defaultStrategy": "auto",
     "providerSwitch": "ask",
+    "agentGuard": "ask",
     "providerOrder": list(BUILTIN_PROVIDERS),
     "conserveProviders": [],
     "maxWorkers": MAX_WORKERS,
@@ -1978,6 +1987,9 @@ def validate_policy(raw: Any) -> Dict[str, Any]:
     provider_switch = raw.get("providerSwitch", DEFAULT_POLICY["providerSwitch"])
     if provider_switch not in ("ask", "automatic", "never"):
         raise PlanError("policy.providerSwitch must be ask, automatic or never")
+    agent_guard = raw.get("agentGuard", DEFAULT_POLICY["agentGuard"])
+    if agent_guard not in AGENT_GUARD_MODES:
+        raise PlanError("policy.agentGuard must be " + ", ".join(AGENT_GUARD_MODES))
     max_workers = raw.get("maxWorkers", DEFAULT_POLICY["maxWorkers"])
     max_concurrent = raw.get("maxConcurrent", DEFAULT_POLICY["maxConcurrent"])
     for label, value in (("maxWorkers", max_workers), ("maxConcurrent", max_concurrent)):
@@ -1992,6 +2004,7 @@ def validate_policy(raw: Any) -> Dict[str, Any]:
             "policy.defaultStrategy",
         ),
         "providerSwitch": provider_switch,
+        "agentGuard": agent_guard,
         "providerOrder": validate_provider_list(
             raw.get("providerOrder", DEFAULT_POLICY["providerOrder"]),
             "policy.providerOrder",
@@ -5121,9 +5134,57 @@ def mode_reminder(mode: Dict[str, Any], everywhere: bool) -> str:
     parts.append(
         "Follow the alethe skill for each request: do it yourself when that is cheaper, "
         "delegate bounded units when it pays, and leave any other skill or spec workflow in charge of "
-        "its own steps. '/alethe off' turns this off here."
+        "its own steps. Before the first dispatch, show the user one line per unit: provider, model and why. "
+        "'/alethe off' turns this off here."
     )
     return " ".join(parts)
+
+
+def session_quota(event: Dict[str, Any], cwd: Path, now: float) -> Tuple[Dict[str, Any], Dict[str, Any], Path]:
+    """Quota readings for a hook, reusing the session's passive cache so a prompt stays cheap."""
+    session = event.get("session_id")
+    transcript = Path(event["transcript_path"]).expanduser() if event.get("transcript_path") else None
+    session = str(session or (transcript.stem if transcript else "cwd:" + str(cwd.resolve())))
+    cache_path = passive_state_path(session)
+    state = read_optional_json(cache_path) or {}
+    check = state.setdefault("check", {})
+    scan = now - float(number(check.get("lastQuotaScan")) or 0) >= QUOTA_SCAN_SECONDS
+    usage, _ = passive_usage(state, default_policy_path(), now, scan=scan)
+    if scan:
+        check["lastQuotaScan"] = now
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(cache_path, state)
+    return usage, state, cache_path
+
+
+def quota_lines(usage: Dict[str, Any]) -> str:
+    settings = playbook_settings()["passive"]
+    return passive_quota_text(usage, load_prices(default_policy_path()), settings)
+
+
+def agent_guard_output(event: Dict[str, Any], cwd: Path, mode: Dict[str, Any], now: float) -> str:
+    tool_input = event.get("tool_input") if isinstance(event.get("tool_input"), dict) else {}
+    usage, state, cache_path = session_quota(event, cwd, now)
+    policy = load_policy(default_policy_path())
+    notes = []
+    check = state.setdefault("check", {})
+    if not check.get("planReminded"):
+        notes.append("Alethe: before this dispatch, show the user one line per unit: provider, model and why.")
+        check["planReminded"] = True
+        atomic_write_json(cache_path, state)
+    label = " ".join(str(tool_input.get(key) or "") for key in ("subagent_type", "description"))
+    guidance = lead_quota_guidance(usage, policy, available_builtin_providers())
+    decision = None
+    if guidance and IMPLEMENTATION_AGENT.search(label or "general-purpose") and policy["agentGuard"] != "off":
+        notes.append(guidance)
+        decision = {"ask": "ask", "deny": "deny"}.get(policy["agentGuard"])
+    if not notes:
+        return ""
+    output: Dict[str, Any] = {"hookEventName": "PreToolUse", "additionalContext": " ".join(notes)}
+    if decision:
+        output["permissionDecision"] = decision
+        output["permissionDecisionReason"] = guidance
+    return json.dumps({"hookSpecificOutput": output}, ensure_ascii=False) + "\n"
 
 
 def hook_stdin() -> str:
@@ -5140,7 +5201,7 @@ def hook_output(stdin_text: str) -> str:
         event = json.loads(stdin_text) if stdin_text.strip() else {}
         cwd = Path(event.get("cwd") or os.getcwd()) if isinstance(event, dict) else Path(os.getcwd())
         event_name = event.get("hook_event_name", "UserPromptSubmit")
-        if event_name not in ("UserPromptSubmit", "PostToolUse"):
+        if event_name not in ("UserPromptSubmit", "PostToolUse", "PreToolUse"):
             return ""
         now = time.time()
         state = read_mode_state(now)
@@ -5150,9 +5211,28 @@ def hook_output(stdin_text: str) -> str:
         if scope not in (None, "default") and now - float(number(mode.get("seenAt")) or 0) > MODE_REFRESH_SECONDS:
             mode["seenAt"] = now
             save_mode_state(state)
+        if event_name == "PreToolUse":
+            if event.get("tool_name") not in AGENT_TOOLS or mode.get("goal") == "freestyle":
+                return ""
+            return agent_guard_output(event, cwd, mode, now)
         if mode.get("goal") == "passive":
-            return passive_hook(event, cwd, mode, now)
-        return mode_reminder(mode, scope is None) + "\n" if event_name == "UserPromptSubmit" else ""
+            output = passive_hook(event, cwd, mode, now)
+            if event_name == "UserPromptSubmit":
+                guidance = lead_quota_guidance(session_quota(event, cwd, now)[0], load_policy(default_policy_path()),
+                                               available_builtin_providers())
+                if guidance and guidance not in output:
+                    output = (output.rstrip("\n") + "\n" if output else "") + guidance + "\n"
+            return output
+        if event_name != "UserPromptSubmit":
+            return ""
+        text = mode_reminder(mode, scope is None)
+        if mode.get("goal") != "freestyle":
+            usage = session_quota(event, cwd, now)[0]
+            text += " Quota: " + quota_lines(usage)
+            guidance = lead_quota_guidance(usage, load_policy(default_policy_path()), available_builtin_providers())
+            if guidance:
+                text += " " + guidance
+        return text + "\n"
     except Exception:  # A hook must never block the user's prompt.
         return ""
 
@@ -5210,6 +5290,7 @@ def passive_usage(
 
 
 PASSIVE_PROVIDER_LABELS = {"codex": "Codex", "claude": "Claude", "agy": "Antigravity"}
+QUOTA_SCAN_SECONDS = 300
 
 
 def passive_quota_providers(usage: Dict[str, Any]) -> List[str]:
@@ -5251,6 +5332,46 @@ def passive_quota_text(usage: Dict[str, Any], prices: Dict[str, Any], settings: 
     return " ".join(parts)
 
 
+def providers_with_room(usage: Dict[str, Any], installed: Sequence[str]) -> Tuple[List[str], List[str]]:
+    """Non-Claude providers with fresh room, and installed ones whose quota is unknown."""
+    room, unknown = [], []
+    for provider in installed:
+        if provider == "claude":
+            continue
+        reading = usage["providers"].get(provider)
+        if not reading or reading["missing"] or reading["stale"]:
+            unknown.append(provider)
+        elif not reading["low"] and not reading["blocked"]:
+            room.append(provider)
+    return room, unknown
+
+
+def lead_quota_guidance(usage: Dict[str, Any], policy: Dict[str, Any], installed: Sequence[str]) -> str:
+    """Plain instruction for the lead when its own Claude quota is critical."""
+    claude = usage["providers"].get("claude")
+    if not claude or claude["missing"] or not (claude["low"] or claude["blocked"]):
+        return ""
+    windows = claude["windows"]
+    worst = max((name for name in MAIN_QUOTA_WINDOWS if name in windows), key=lambda name: windows[name]["usedPercent"])
+    percent = windows[worst]["usedPercent"]
+    age = " (last reading)" if claude["stale"] else ""
+    room, unknown = providers_with_room(usage, installed)
+    names = lambda providers: ", ".join(PASSIVE_PROVIDER_LABELS.get(provider, provider) for provider in providers)
+    text = (f"Alethe: Claude {worst} is at {percent:g}%{age}, past the {usage['criticalThreshold']:g}% critical "
+            "threshold. This session and every Agent subagent, haiku and sonnet included, draw on that quota.")
+    targets = room or unknown
+    if targets:
+        text += (f" Send implementation, test and review units to {names(targets)} as alethe workers "
+                 f"(new, run --detach, wait), not to Agent subagents")
+        text += "; check their quota with `usage` first." if not room else "."
+    else:
+        text += " No other provider is installed with room."
+    if policy["providerSwitch"] == "ask" or not targets:
+        text += (" Before the next dispatch, tell the user Claude is critical and ask whether to move the work"
+                 + (f" to {names(targets)}" if targets else "") + ", wait, or continue on Claude.")
+    return text
+
+
 def passive_spend_line(payload: Dict[str, Any], quota_text: str) -> str:
     lead = payload["lead"]["total"]
     if not lead["responses"]:
@@ -5278,7 +5399,7 @@ def passive_brief(settings: Dict[str, Any]) -> str:
         "bounded scouting, checked edits, tests or finished-diff reviews; keep small/ambiguous/design/coupled "
         "work and integration. Honor billing/passive.prefer: Codex first with fresh 5h/week below "
         "quota.criticalThreshold; unused subscription quota expires. Use one-worker economy via "
-        "new/run --detach/wait; pin model/effort. If low/context-bound, use cheaper Agent haiku/sonnet. "
+        "new/run --detach/wait; pin model/effort. Agent subagents bill Claude too: never when Claude is low. "
         "Announce delegation in one line. Auto-delegate only to fresh-room subscription workers (default billing); "
         "API/unknown/stale needs approval. "
         f"Ask above {settings['askAboveWorkers']} parallel workers, on low providers, higher cost or past quota.stopAt. "
@@ -6710,6 +6831,8 @@ def update_policy(args: argparse.Namespace, policy_path: Path) -> Dict[str, Any]
         policy["backend"] = args.backend
     if args.provider_switch:
         policy["providerSwitch"] = args.provider_switch
+    if getattr(args, "agent_guard", None):
+        policy["agentGuard"] = args.agent_guard
     if args.provider_order:
         policy["providerOrder"] = validate_provider_list(
             args.provider_order, "provider order", allow_empty=False
@@ -6912,6 +7035,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     policy_parser.add_argument("--file", type=Path)
     policy_parser.add_argument("--backend", choices=["auto", "skill", "mcp"])
     policy_parser.add_argument("--provider-switch", choices=["ask", "automatic", "never"])
+    policy_parser.add_argument("--agent-guard", choices=list(AGENT_GUARD_MODES),
+                               help="what the PreToolUse hook does with an implementation Agent subagent while Claude is critical")
     policy_parser.add_argument("--provider-order", nargs="+", choices=list(BUILTIN_PROVIDERS))
     policy_parser.add_argument(
         "--conserve-providers", nargs="*", choices=list(BUILTIN_PROVIDERS)
