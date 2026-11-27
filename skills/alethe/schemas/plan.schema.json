@@ -88,7 +88,30 @@
           "default": false,
           "description": "Allow skills and slash commands from user settings on an explicit Claude worker."
         },
-        "idleTimeoutSeconds": { "type": "integer", "minimum": 5, "maximum": 86400 }
+        "idleTimeoutSeconds": { "type": "integer", "minimum": 5, "maximum": 86400 },
+        "allowedPaths": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Repository-relative patterns the worker may change (** spans folders; a pattern without / matches at any depth). Any other change fails the unit with scope_violation. When forbiddenPaths is omitted, test config, lockfiles, .env and existing migrations stay forbidden."
+        },
+        "forbiddenPaths": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Patterns the worker must not change. Replaces the default forbidden list; [] disables it."
+        },
+        "acceptance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["command"],
+          "description": "Command the runner executes in the worker's checkout after it finishes. A non-zero exit fails the unit with acceptance_failed, whatever STATUS the worker reported.",
+          "properties": {
+            "command": { "type": "string", "minLength": 1 },
+            "args": { "type": "array", "items": { "type": "string" } },
+            "cwd": { "type": "string", "minLength": 1 },
+            "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 86400, "default": 600 }
+          }
+        }
       },
       "allOf": [
         {
@@ -100,6 +123,17 @@
             "required": ["provider"],
             "properties": { "provider": { "const": "claude" } }
           }
+        },
+        {
+          "if": { "anyOf": [{ "required": ["allowedPaths"] }, { "required": ["forbiddenPaths"] }] },
+          "then": {
+            "required": ["mode", "isolate"],
+            "properties": { "mode": { "const": "write" }, "isolate": { "const": true } }
+          }
+        },
+        {
+          "if": { "required": ["acceptance"] },
+          "then": { "required": ["mode"], "properties": { "mode": { "const": "write" } } }
         },
         {
           "if": { "properties": { "provider": { "const": "custom" } } },

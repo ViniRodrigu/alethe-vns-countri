@@ -328,7 +328,7 @@ Besides its status, error, session, metrics and diff, `outcome.json` carries:
 - `verdict`: a `VERDICT:` line of `PASS`, `FAIL` or `NOT_PROVEN`, which validator briefs ask for
   (see [briefs.md](briefs.md)).
 - `failureKind`: `rate_limited`, `auth_required`, `not_installed`, `timed_out`, `stalled`, `budget`,
-  `budget_exceeded`, `invalid_output`, `no_result` or `error`, read from the error and the end of
+  `budget_exceeded`, `invalid_output`, `no_result`, `acceptance_failed`, `scope_violation` or `error`, read from the error and the end of
   the logs. `resetHint` keeps a reset time the CLI printed.
 - `permissionDenials` and `billedModels`: the tools Claude refused and the models it billed.
 - `readOnlyViolation` and `touchedFiles`: whether a read-only worker in a checkout changed it,
@@ -337,6 +337,40 @@ Besides its status, error, session, metrics and diff, `outcome.json` carries:
 - `dirtyBefore`: for a writer in the main checkout, the paths that already had changes when it
   started; its `diff.patch` includes them.
 - `costCapUsd`, `diffError` and `sharedCheckoutWith`.
+- `scopeViolations` and `acceptance`: see "Operator guards" below.
+
+## Operator guards
+
+A write worker with `isolate: true` can carry `allowedPaths`, `forbiddenPaths` and `acceptance`.
+Patterns are relative to the checkout root and work like `.gitignore`: `**` spans folders, `*`
+stays in one, a pattern without `/` matches at any depth and a trailing `/` means the whole folder.
+
+The runner snapshots the worktree after seeding and again when the worker exits. Each changed path
+is checked in order: a junk name (drive letter glued to a name, a reserved character, or the
+U+F000 stand-ins that Cygwin, MSYS and WSL write), then `forbiddenPaths`, then frozen paths (an
+existing file under `database/migrations/` or `migrations/`; new files there are fine), then
+`allowedPaths`. Without `forbiddenPaths`, the defaults are `.env`, `.env.*`, PHPUnit config,
+`tests/TestCase.php`, `composer.json`, `package.json`, `pyproject.toml`, `.gitignore`,
+`.gitattributes` and lockfiles, minus any of them that `allowedPaths` names literally. An explicit
+`forbiddenPaths` replaces the defaults and the frozen paths; `[]` turns both off.
+
+Any violation sets `failureKind: scope_violation`, lists up to 50 `{path, reason}` entries in
+`scopeViolations`, and skips acceptance. Otherwise, if the worker succeeded, the runner executes
+`acceptance` in the worker's `cwd` (or its `cwd` subfolder) with no shell and the lead's
+environment, for up to `timeoutSeconds` (600 by default). Its output goes to `acceptance.log`, and
+`acceptance` in `outcome.json` records `command`, `exitCode`, `timedOut`, `durationSeconds`,
+`passed`, `logPath` and the last 4000 characters in `tail`. A failure sets
+`failureKind: acceptance_failed`, even when the worker said `STATUS: DONE`.
+
+```json
+{
+  "id": "fixtures", "provider": "custom", "mode": "write", "isolate": true, "cwd": ".",
+  "command": "python", "args": ["C:/path/to/worker.py"],
+  "allowedPaths": ["database/factories/**", "tests/Fixtures/**"],
+  "acceptance": { "command": "php", "args": ["artisan", "test", "--filter", "InvoiceFactoryTest"] },
+  "taskFile": "fixtures.md"
+}
+```
 
 The state records both `strategy` and `requestedStrategy`; they differ when `auto` resolves to a
 concrete runner strategy. Validation also reports `requestedProvider` next to the effective
@@ -418,6 +452,9 @@ narrower task or corrected invocation addresses a specific cause:
 - `auth_required` and `not_installed`: tell the user; another attempt will fail the same way.
 - `timed_out` and `stalled`: resume the session with runner strategy `rescue`, or narrow the task.
 - `budget` and `budget_exceeded`: raise the budget only when the user agrees.
+- `acceptance_failed`: retry once with `acceptance.tail` pasted into a narrower brief; after a
+  second failure, move the unit to a stronger provider.
+- `scope_violation`: discard the worktree. Narrow the brief or `allowedPaths`, or move the unit.
 
 A partial writer diff is untrusted until reviewed.
 

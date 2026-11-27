@@ -71,6 +71,23 @@ runner keeps slash expansion enabled in plan mode because agy 1.4.9 ignores `--m
 it. Denied actions appear as `permissionDenials`; an empty denied response is a permission failure.
 Use Codex or Claude when a read-only unit needs shell commands.
 
+### Antigravity models
+
+The runner finds `agy` on `PATH` or, when the installer left PATH alone, in
+`~/.gemini/bin/agy(.exe)`. `orchestrate.py models --refresh-agy` runs `agy models`, which lists
+the account's models without a model turn, and saves the list as `agy-models.json` next to the
+policy. `models` then marks each agy model `available`, with its `displayName` and `quotaGroup`.
+Never use `agy --print=/models`: it is not a command and runs a paid model turn.
+
+Gemini slugs carry the thinking level (`gemini-4-hydrogen-high`, `gemini-3.8-flash-low`), so
+pick the level through the slug; `--effort` is a separate knob. The bundled tiers map cheap to
+`gemini-3.8-flash-low`, standard to `gemini-3.8-flash-high` and strong to
+`gemini-4-hydrogen-high`. A user playbooks copy replaces the bundled file, so add the `agy:` tier
+rows to it by hand. A dry run warns when a plan names an agy model missing from the last list.
+Gemini and Gemma models count against the Gemini quota windows; every other family, such as
+Claude or gpt-oss, counts against the third-party `3p` windows. Agy's JSON `thinking_tokens`
+are reported as output, and `cache_read_tokens` as cache reads.
+
 ## Claude Code skills
 
 Set `claudeSkills: true` on an explicit `provider: "claude"` worker in the local runner to allow

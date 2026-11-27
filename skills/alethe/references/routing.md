@@ -97,18 +97,18 @@ failure, surfaced in `outcome.json`.
 
 ## Route by requirements
 
-For an external proposal worker, estimate the full input and expected output against the
-configured model's context and output limits. A complex investigation can be a bounded unit if
-it has a clear deliverable and credible acceptance checks. Prefer the capable configured route
-when the user has authorized sharing the exact selected context and the expected review and
-repair cost makes delegation worthwhile.
+Route a unit to a free external model (such as FreeLLMAPI) only when it is a chore the runner can
+verify alone: a mechanical edit from an exact list, fixtures, a log summary, data extraction, text
+variants or a first draft of tests from given names and assertions. Planning, decisions, review,
+debugging, multi-file integration and framework API work stay with paid models, however large the
+context. Estimate the full input and expected output against the model's context and output
+limits, and keep the brief to one unit of at most about ten items.
 
 Pass the approved excerpts or sanitized logs with the brief. File paths alone cannot supply
-context to a remote model without checkout access. Ask for a short conclusion, evidence with
-file references, a patch when applicable, and uncertainties. Keep logs on disk and inspect only
-the parts needed for review. Check patches and execute acceptance tests in the authorized local
-checkout. On a failed proposal, use the existing outcome and follow-up wave to record one
-targeted correction or reassignment within the orchestration budget.
+context to a remote model without checkout access. A writer gets `allowedPaths` and an
+`acceptance` command, and the runner's exit code, not the worker's `STATUS:`, decides the
+outcome. On `acceptance_failed`, retry once with `acceptance.tail` pasted into the brief; on a
+second failure or a `scope_violation`, move the unit to a paid provider.
 
 The offline proposal pilot exercises this handoff through the existing custom CLI adapter.
 From the repository root, run

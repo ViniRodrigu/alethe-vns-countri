@@ -672,7 +672,9 @@ class PassiveTest(unittest.TestCase):
         usage = r.usage_payload(self.policy, refresh=False, now=now)
         text = r.passive_quota_text(usage, prices, settings)
         self.assertIn("Antigravity 5h 10%", text)
-        # Not in the default prefer list, so its spare room is not advertised.
+        # In the default prefer list, so its spare room is advertised; without it, it is not.
+        self.assertRegex(text, r"Antigravity[^.]*: room to spare")
+        text = r.passive_quota_text(usage, prices, {**settings, "prefer": ["codex", "claude"]})
         self.assertNotRegex(text, r"Antigravity[^.]*room to spare")
         text = r.passive_quota_text(usage, prices, {**settings, "prefer": ["codex", "agy", "claude"]})
         self.assertRegex(text, r"Antigravity[^.]*: room to spare")

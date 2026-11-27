@@ -6,6 +6,16 @@ It sends one non-streaming `POST /v1/chat/completions` request with a bearer key
 the approved worker brief from stdin and returns a proposal through the existing custom CLI
 result format. It supplies no model tools and does not read source files or run the proposal.
 
+## What to send
+
+Send chores with an acceptance check the lead can run alone: a mechanical edit from an exact list
+of changes, fixtures and test data, a test log summary, data extraction, text variants and
+translation, or a first test draft from given names and assertions. Keep planning, decisions,
+review, debugging, multi-file integration and framework API work with paid models. Treat the
+proposal's `STATUS:` as a claim: apply it in a worktree whose worker has `allowedPaths` and
+`acceptance` (see [operations.md](operations.md#operator-guards)), or apply it yourself and run
+the check, and decide by the exit code.
+
 ## Configure a route
 
 Set these variables in the shell or launcher that starts the skill:

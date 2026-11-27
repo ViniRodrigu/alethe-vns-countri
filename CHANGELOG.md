@@ -3,6 +3,21 @@
 The version is the integer in `skills/alethe/SKILL.md` under `metadata.version`.
 Alethe installs and updates the skill by that number.
 
+## 26
+
+- Operator guards for write workers: `allowedPaths` and `forbiddenPaths` fail a unit with
+  `scope_violation` when it changes files outside its scope, a default-forbidden path (`.env*`,
+  test config, manifests, lockfiles), an existing migration or a junk name. `acceptance` runs a
+  check in the worker's checkout and fails the unit with `acceptance_failed` on a non-zero exit,
+  whatever `STATUS:` the worker reported.
+- FreeLLMAPI guidance now routes only verifiable chores to free models and keeps planning,
+  debugging, integration and framework API work with paid models.
+- The FreeLLMAPI adapter reports a timeout as a timeout on Python 3.9 and on Windows.
+- Antigravity: the runner finds `agy` in `~/.gemini/bin` when it is not on PATH, and
+  `models --refresh-agy` reads the account's models from `agy models`. Bundled tiers and
+  profiles now pin Gemini slugs for agy, passive mode may delegate to it, the third-party quota
+  is chosen by model family, and thinking and cache-read tokens are counted.
+
 ## 25
 
 - Use the independent `alethe-vns-countri` marketplace ID for this fork.

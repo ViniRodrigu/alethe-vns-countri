@@ -4,6 +4,9 @@ import argparse
 import json
 import os
 import sys
+import errno
+import socket
+from http.client import HTTPException
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
@@ -15,6 +18,24 @@ MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 class NoRedirects(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
+
+
+TIMEOUT_ERRNOS = {errno.ETIMEDOUT, 10060}
+
+
+def is_timeout(error):
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        if isinstance(error, (TimeoutError, socket.timeout)):
+            return True
+        if isinstance(error, OSError) and (error.errno in TIMEOUT_ERRNOS or getattr(error, "winerror", None) == 10060):
+            return True
+        if "timed out" in str(error).lower():
+            return True
+        error = error.reason if isinstance(error, URLError) and isinstance(error.reason, BaseException) else (
+            error.__cause__ or error.__context__)
+    return False
 
 
 def completion_url(base_url):
@@ -102,9 +123,9 @@ def main():
         print(f"FreeLLMAPI HTTP {error.code}", file=sys.stderr)
         error.close()
         return 1
-    except (TimeoutError, URLError) as error:
-        reason = error.reason if isinstance(error, URLError) else error
-        print("FreeLLMAPI request timed out" if isinstance(reason, TimeoutError)
+    except (OSError, HTTPException) as error:
+        # Windows can surface a read timeout as URLError, socket.timeout, WinError 10060 or a reset.
+        print("FreeLLMAPI request timed out" if is_timeout(error)
               else "FreeLLMAPI connection failed", file=sys.stderr)
         return 1
     except (ValueError, KeyError, IndexError, TypeError):

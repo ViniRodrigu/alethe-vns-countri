@@ -62,6 +62,13 @@ def main() -> int:
         Path(sys.argv[2]).write_text("hello\nworld\n", encoding="utf-8")
         print("Outcome: wrote the new file with two lines.")
         return 0
+    if mode == "writes":
+        for name in sys.argv[2:]:
+            target = Path(name)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("changed\n", encoding="utf-8")
+        print("Edited the files.\nSTATUS: DONE\nSUMMARY: All done.")
+        return 0
     if mode == "say":
         print(sys.argv[2])
         return 0
