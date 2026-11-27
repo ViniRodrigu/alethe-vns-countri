@@ -12,7 +12,7 @@
 
   <p align="center">
     <a href="https://github.com/Kc1t/alethe-orchestrate-skill/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Kc1t/alethe-orchestrate-skill/actions/workflows/ci.yml/badge.svg"></a>
-    <a href="./CHANGELOG.md"><img alt="Skill version" src="https://img.shields.io/badge/skill-v25-4f46e5?style=flat-square"></a>
+    <a href="./CHANGELOG.md"><img alt="Skill version" src="https://img.shields.io/badge/skill-v26-4f46e5?style=flat-square"></a>
     <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square"></a>
     <img alt="Python 3.9+ optional" src="https://img.shields.io/badge/python-3.9%2B%20optional-3776ab?style=flat-square&logo=python&logoColor=white">
     <img alt="Windows, macOS and Linux" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-555?style=flat-square">
@@ -38,7 +38,7 @@ claude plugin install alethe-orchestrate --marketplace ViniRodrigu/alethe-vns-co
 
 Keep the extracted directory in place when installing from a local marketplace.
 Run `claude plugin list` and look for `alethe-orchestrate@alethe-vns-countri` version
-`25.0.0`. Open a new Claude Code session and run `/alethe setup`. The Python runner requires
+`26.0.0`. Open a new Claude Code session and run `/alethe setup`. The Python runner requires
 Python 3.9 or later. See the optional [Superpowers](skills/alethe/references/providers.md#claude-code-skills)
 and [FreeLLMAPI](skills/alethe/references/freellmapi.md) setup.
 

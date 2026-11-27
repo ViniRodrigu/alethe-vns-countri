@@ -227,7 +227,19 @@ FAILURE_HINTS = {
     "budget": "a budget stopped it; raise the budget or drop the unit",
     "budget_exceeded": "its own cost cap stopped it; raise maxReportedCostUsd or narrow the task",
     "invalid_output": "its output did not parse; check stderr.log and the CLI version",
+    "acceptance_failed": "the acceptance check failed; retry once with acceptance.tail pasted into the brief, then move the unit to a stronger provider",
+    "scope_violation": "it changed files outside allowedPaths, a forbidden path or a junk name; discard the worktree and narrow the brief",
 }
+# Paths an operator worker with allowedPaths may never change unless the plan names them literally.
+DEFAULT_FORBIDDEN_PATHS = (
+    ".env", ".env.*", "phpunit.xml", "phpunit.xml.dist", "phpunit.dist.xml", "tests/TestCase.php",
+    "composer.json", "composer.lock", "package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+    "bun.lockb", "*.lock", "pyproject.toml", "poetry.lock", "uv.lock", ".gitignore", ".gitattributes",
+)
+# Existing files under these paths are frozen; new files are allowed.
+DEFAULT_FROZEN_PATHS = ("database/migrations/**", "migrations/**")
+ACCEPTANCE_TAIL_CHARS = 4000
+DEFAULT_ACCEPTANCE_TIMEOUT = 600
 ERROR_LINE = re.compile(r"\berror\b|\bfailed\b|denied|forbidden|exception|\b4\d\d\b|\b5\d\d\b", re.IGNORECASE)
 FAILURE_PATTERNS = (
     ("timed_out", re.compile(r"\bFreeLLMAPI request timed out\b")),
@@ -2014,6 +2026,62 @@ def normalized_provider(value: Any) -> str:
     return provider
 
 
+def validate_path_patterns(value: Any, label: str) -> List[str]:
+    if not isinstance(value, list):
+        raise PlanError(f"{label} must be an array of repository-relative patterns")
+    patterns = []
+    for entry in value:
+        text = require_string(entry, label).replace("\\", "/")
+        if text.startswith("/") or re.match(r"^[A-Za-z]:", text) or any(part == ".." for part in text.split("/")):
+            raise PlanError(f"{label} entries must be repository-relative patterns, not {text!r}")
+        patterns.append(text.rstrip("/") + ("/**" if text.endswith("/") else ""))
+    return patterns
+
+
+def validate_path_guard(item: Dict[str, Any], worker_id: str, mode: str, isolate: bool) -> Optional[Dict[str, Any]]:
+    if "allowedPaths" not in item and "forbiddenPaths" not in item:
+        return None
+    label = f"worker {worker_id}"
+    if mode != "write" or not isolate:
+        raise PlanError(f"{label} allowedPaths and forbiddenPaths need mode write with isolate: true")
+    allowed = validate_path_patterns(item["allowedPaths"], f"{label}.allowedPaths") if "allowedPaths" in item else None
+    if allowed is not None and not allowed:
+        raise PlanError(f"{label}.allowedPaths must name at least one path")
+    if "forbiddenPaths" in item:
+        forbidden = validate_path_patterns(item["forbiddenPaths"], f"{label}.forbiddenPaths")
+        frozen: List[str] = []
+    else:
+        literal = {pattern for pattern in allowed or [] if not any(char in pattern for char in "*?[")}
+        forbidden = [pattern for pattern in DEFAULT_FORBIDDEN_PATHS if pattern not in literal]
+        frozen = list(DEFAULT_FROZEN_PATHS)
+    return {"allowed": allowed, "forbidden": forbidden, "frozen": frozen, "literalAllowed": sorted(
+        pattern for pattern in allowed or [] if not any(char in pattern for char in "*?["))}
+
+
+def validate_acceptance(raw: Any, worker_id: str, mode: str) -> Optional[Dict[str, Any]]:
+    if raw is None:
+        return None
+    label = f"worker {worker_id}.acceptance"
+    if not isinstance(raw, dict):
+        raise PlanError(f"{label} must be an object with command and args")
+    unknown = set(raw) - {"command", "args", "cwd", "timeoutSeconds"}
+    if unknown:
+        raise PlanError(f"{label} has unknown fields: {', '.join(sorted(unknown))}")
+    if mode != "write":
+        raise PlanError(f"{label} needs mode write; a read-only worker leaves nothing to verify")
+    command = require_string(raw.get("command"), f"{label}.command")
+    args = raw.get("args", [])
+    if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
+        raise PlanError(f"{label}.args must be an array of strings")
+    cwd = raw.get("cwd")
+    if cwd is not None:
+        cwd = validate_relative_path(cwd, f"{label}.cwd")
+    timeout = raw.get("timeoutSeconds", DEFAULT_ACCEPTANCE_TIMEOUT)
+    if not isinstance(timeout, int) or isinstance(timeout, bool) or not 1 <= timeout <= 86400:
+        raise PlanError(f"{label}.timeoutSeconds must be between 1 and 86400")
+    return {"command": command, "args": args, "cwd": cwd, "timeoutSeconds": timeout}
+
+
 def validate_relative_path(value: Any, label: str) -> str:
     text = require_string(value, label).replace("\\", "/")
     path = Path(text)
@@ -2133,6 +2201,9 @@ def validate_plan(
             "mcp",
             "claudeSkills",
             "idleTimeoutSeconds",
+            "allowedPaths",
+            "forbiddenPaths",
+            "acceptance",
         }
         if unknown:
             raise PlanError(
@@ -2176,6 +2247,8 @@ def validate_plan(
         ]
         if seed_paths and not isolate:
             raise PlanError(f"worker {worker_id} seedPaths requires isolate")
+        path_guard = validate_path_guard(item, worker_id, mode, isolate)
+        acceptance = validate_acceptance(item.get("acceptance"), worker_id, mode)
         model = optional_name(item.get("model"), f"worker {worker_id}.model")
         effort = optional_name(item.get("effort"), f"worker {worker_id}.effort")
         tier = item.get("tier", "standard")
@@ -2219,6 +2292,8 @@ def validate_plan(
             "mcp": mcp,
             "claudeSkills": claude_skills,
             "idleTimeoutSeconds": idle_timeout,
+            "pathGuard": path_guard,
+            "acceptance": acceptance,
             "task": task,
             "trust": copy.deepcopy(policy["trust"]),
         }
@@ -3361,6 +3436,94 @@ def changed_paths(before: Dict[str, str], after: Dict[str, str]) -> List[str]:
     return sorted(path for path in set(before) | set(after) if before.get(path) != after.get(path))
 
 
+@functools.lru_cache(maxsize=512)
+def path_pattern(pattern: str) -> "re.Pattern[str]":
+    """Gitignore-like: ** spans folders, * stays in one; a pattern without / matches at any depth."""
+    body = ""
+    index = 0
+    while index < len(pattern):
+        if pattern.startswith("**/", index):
+            body += "(?:.*/)?"
+            index += 3
+        elif pattern.startswith("**", index):
+            body += ".*"
+            index += 2
+        elif pattern[index] == "*":
+            body += "[^/]*"
+            index += 1
+        elif pattern[index] == "?":
+            body += "[^/]"
+            index += 1
+        else:
+            body += re.escape(pattern[index])
+            index += 1
+    prefix = "" if "/" in pattern else "(?:.*/)?"
+    return re.compile(f"^{prefix}{body}(?:/.*)?$", re.IGNORECASE if os.name == "nt" else 0)
+
+
+def matches_any(path: str, patterns: Sequence[str]) -> bool:
+    return any(path_pattern(pattern).match(path) for pattern in patterns)
+
+
+# A drive letter glued to a name ("C:Users", "C*Herd...") or a reserved character, including the
+# U+F000 private-use stand-ins that Cygwin, MSYS and WSL write for characters Windows refuses.
+JUNK_NAME = re.compile(r"(?:^|/)[A-Za-z][:*\uf03a\uf02a]|[:*?<>|\\\"\x00-\x1f\uf001-\uf07f]")
+
+
+def path_guard_violations(
+    guard: Dict[str, Any], before: Dict[str, str], after: Dict[str, str]
+) -> List[Dict[str, str]]:
+    violations = []
+    for path in changed_paths(before, after):
+        # A path is tracked unless git lists it as untracked; clean tracked files are absent from status.
+        code = after.get(path) or before.get(path, "")
+        existed = not code.startswith("??") and not code.startswith("A")
+        if JUNK_NAME.search(path):
+            reason = "junk name (drive letter or reserved character)"
+        elif matches_any(path, guard["forbidden"]):
+            reason = "forbidden path"
+        elif existed and guard["frozen"] and matches_any(path, guard["frozen"]):
+            reason = "existing file in a frozen path"
+        elif guard["allowed"] is not None and not matches_any(path, guard["allowed"]):
+            reason = "outside allowedPaths" + (" (untracked file)" if path not in before and after.get(path, "").startswith("??") else "")
+        else:
+            continue
+        violations.append({"path": path, "reason": reason})
+    return violations[:MAX_LISTED_PATHS]
+
+
+def run_acceptance(acceptance: Dict[str, Any], cwd: Path, worker_dir: Path) -> Dict[str, Any]:
+    target = cwd / acceptance["cwd"] if acceptance["cwd"] else cwd
+    log_path = worker_dir / "acceptance.log"
+    record: Dict[str, Any] = {
+        "command": [acceptance["command"], *acceptance["args"]], "cwd": str(target),
+        "exitCode": None, "timedOut": False, "durationSeconds": 0.0, "logPath": str(log_path), "tail": "", "error": None,
+    }
+    started = time.monotonic()
+    environment = {key: value for key, value in os.environ.items() if key not in ("CLAUDECODE", WORKER_ENV_FLAG)}
+    try:
+        launch = [*launch_command(resolve_executable(acceptance["command"])), *acceptance["args"]]
+        with log_path.open("wb") as log_file:
+            process = start_process(launch, target, subprocess.DEVNULL, log_file, subprocess.STDOUT, environment)
+            try:
+                record["exitCode"] = process.wait(timeout=acceptance["timeoutSeconds"])
+            except subprocess.TimeoutExpired:
+                stop_process_tree(process)
+                record["timedOut"] = True
+            finally:
+                close_process_job(process)
+    except (OSError, PlanError) as error:
+        record["error"] = str(error)
+    record["durationSeconds"] = round(time.monotonic() - started, 3)
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        text = ""
+    record["tail"] = text[-ACCEPTANCE_TAIL_CHARS:]
+    record["passed"] = record["exitCode"] == 0 and not record["timedOut"] and record["error"] is None
+    return record
+
+
 class CheckoutRegistry:
     def __init__(self) -> None:
         self.lock = threading.Lock()
@@ -3691,6 +3854,8 @@ def run_worker(
         "touchedFiles": None,
         "dirtyBefore": None,
         "sharedCheckoutWith": [],
+        "scopeViolations": None,
+        "acceptance": None,
     }
 
     def settle(**fields: Any) -> Dict[str, Any]:
@@ -3741,6 +3906,13 @@ def run_worker(
         )
         applied_cost_cap = cost_cap if "--max-budget-usd" in args else None
         outcome["costCapUsd"] = applied_cost_cap
+        guard = worker.get("pathGuard")
+        guard_root = checkout_root(cwd) if guard else None
+        if guard and guard_root is None:
+            raise PlanError(f"worker {worker_id} allowedPaths need a Git checkout to check its changes")
+        guard_before = checkout_snapshot(guard_root, ignore=[run_dir]) if guard_root else None
+        if guard and guard_before is None:
+            raise PlanError(f"worker {worker_id}: cannot snapshot the worktree to enforce allowedPaths")
         before = None
         if not worker["isolate"]:
             root = checkout_root(cwd)
@@ -3792,6 +3964,26 @@ def run_worker(
         kind, reset_hint = classify_failure(status, error, stderr_path, result_text, ended == "stalled")
         if ended == "stopped":
             status, error, kind, reset_hint = "stopped", "stopped on request", "stopped", None
+        scope_violations = acceptance = None
+        if guard and guard_root is not None and guard_before is not None:
+            guard_after = checkout_snapshot(guard_root, ignore=[run_dir])
+            if guard_after is None:
+                scope_violations = [{"path": "*", "reason": "cannot snapshot the worktree after the run"}]
+            else:
+                scope_violations = path_guard_violations(guard, guard_before, guard_after)
+            if scope_violations and status == "succeeded":
+                status, kind, reset_hint = "failed", "scope_violation", None
+                error = "changed paths outside its scope: " + ", ".join(
+                    f"{item['path']} ({item['reason']})" for item in scope_violations[:5])
+        if worker.get("acceptance") and status == "succeeded":
+            acceptance = run_acceptance(worker["acceptance"], cwd, worker_dir)
+            if not acceptance["passed"]:
+                status, kind, reset_hint = "failed", "acceptance_failed", None
+                reason = acceptance["error"] or (
+                    "timed out" if acceptance["timedOut"] else f"exited {acceptance['exitCode']}")
+                error = f"acceptance check {reason}"
+                if handoff.get("workerStatus") == "DONE":
+                    error += " although the worker reported STATUS: DONE"
         diff_path, diff_error = (
             capture_diff(cwd, worker_dir, worker["isolate"]) if worker["mode"] == "write" else (None, None)
         )
@@ -3829,6 +4021,8 @@ def run_worker(
             touchedFiles=touched,
             dirtyBefore=dirty_before,
             sharedCheckoutWith=sorted(overlapped),
+            scopeViolations=scope_violations,
+            acceptance=acceptance,
             **handoff,
             **details,
         )

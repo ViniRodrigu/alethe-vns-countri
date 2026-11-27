@@ -3,7 +3,7 @@ name: alethe
 description: Orchestrate bounded Codex, Claude Code, Agy, Kimi, or custom CLI workers to finish work with the least lead context and provider usage, following playbooks such as plan big, execute small. Use when the user asks to orchestrate, delegate, compare agents, conserve agent tokens or quota, recover a worker, report what an orchestration did and cost, or work without MCP or Python, when the user types /alethe or a short command such as "alethe report" or "alethe stop", and when they want it on from now on, at any point of a task and alongside other skills. Also use it proactively, without being asked, when a request is large enough to split into bounded independent units, such as a multi-file refactor, a migration, an audit or research across many files. Default passive mode watches session spend and quota and delegates cheaper bounded units; spend reports the lead session. Keep small work with the lead.
 argument-hint: "[task or standing instruction] | on | off | passive | spend | save | max | freestyle | careful | report | status | usage | models | editor | list | stop | clean | skip <phase> | switch <playbook> | freeform | budget <limit> | mark <worker> <used|partial|discarded> | setup | help"
 metadata:
-  version: "25"
+  version: "26"
 ---
 
 # Orchestrate CLI workers
@@ -332,15 +332,39 @@ Use the local runner explicitly for that wave when the default backend would sel
 Use the playbook's review and verification gates for skills that would otherwise launch their
 own subagents. See [providers.md](references/providers.md#claude-code-skills) for a smoke test.
 
-## Delegating proposals to FreeLLMAPI
+## Delegating chores to FreeLLMAPI
 
-When the user has configured [the FreeLLMAPI adapter](references/freellmapi.md), consider it
-first for high-token proposal work. Use it when the exact brief is approved for sharing, a
-ready model fits the input and output, and reviewing the proposal is cheaper than doing the work
-in the lead session. This can include debugging across files and proposing a patch and tests.
-Build an explicit custom worker for that wave. The lead reviews the proposal, applies any patch
-locally, and runs the acceptance checks. If the route fails, use the outcome to make at most one
-targeted correction or reassignment, within the orchestration budget.
+When the user has configured [the FreeLLMAPI adapter](references/freellmapi.md), use it for chores
+whose acceptance the runner can check alone: a mechanical edit from an exact list of changes,
+fixtures and test data, a summary of a test log, data extraction from a document, text variants
+and translation, and a first draft of tests from given names and assertions. Keep planning,
+decisions, review, debugging, multi-file integration and framework API work with paid models.
+Free models have reported `STATUS: DONE` with failing tests, edited test config and lockfiles,
+left debug files and called framework methods that do not exist, so never accept a free result
+on its word.
+
+Send the exact brief only when the user approved sharing it. Keep one unit per brief, at most
+about ten items, the acceptance command written literally, and ask the worker to quote the brief's
+last line. Give a writer `allowedPaths` and `acceptance` (see "Operator guards"). The lead applies
+a returned proposal, runs the checks and decides by their exit code. On failure, retry once with
+the failing check output pasted into the brief, then move the unit to a paid provider.
+
+## Operator guards
+
+For any write worker the lead will not fully review, set these on the worker in the plan:
+
+- `allowedPaths`: patterns it may change. It needs `mode: write` and `isolate: true`. Any other
+  change, an untracked file outside the list, or a junk name such as one starting with a drive
+  letter fails the unit with `scope_violation`. Unless `forbiddenPaths` is set, `.env*`, test
+  config, `tests/TestCase.php`, manifests, lockfiles and existing migrations stay forbidden;
+  naming one of them literally in `allowedPaths` allows it.
+- `acceptance`: `{"command": ..., "args": [...]}` that the runner executes in the worker's checkout
+  after it finishes, without a shell. A non-zero exit or timeout fails the unit with
+  `acceptance_failed` whatever `STATUS:` the worker reported, and `acceptance.tail` holds the end
+  of the output for the retry brief.
+
+These checks run before the lead reads the diff, so a failed unit costs no review. See
+[operations.md](references/operations.md#operator-guards) for the fields in `outcome.json`.
 
 ## Worker contract
 

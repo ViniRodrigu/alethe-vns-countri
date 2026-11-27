@@ -785,3 +785,104 @@ class GuardTest(Fixtures):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OperatorGuardTest(Fixtures):
+    """Runner-side checks for operator workers: it verifies scope and acceptance itself."""
+
+    def run_plan(self, name, workers):
+        path = self.write_plan(name, {"version": 1, "strategy": "economy", "workers": workers})
+        run_dir = self.root / f"run-{name}"
+        code, out, err = self.call("run", path, "--run-dir", run_dir, "--policy", self.policy)
+        return code, (json.loads(out)["workers"][0] if out.strip() else None), err
+
+    def make_app(self):
+        repo = self.make_repo()
+        for name in ("composer.json", "database/migrations/0001_create_users.php", "src/Name.php"):
+            (repo / name).parent.mkdir(parents=True, exist_ok=True)
+            (repo / name).write_text("base\n", encoding="utf-8")
+        git(repo, "add", ".")
+        git(repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "app")
+        return repo
+
+    def operator(self, repo, writes, **extra):
+        return self.worker("op", "write", ["writes", *writes], "text", repo, isolate=True, **extra)
+
+    def check(self, code):
+        return {"command": sys.executable, "args": ["-c", code]}
+
+    def test_patterns_follow_gitignore_rules(self):
+        match = orchestrate.matches_any
+        self.assertTrue(match("app/Models/User.php", ["app/**"]))
+        self.assertTrue(match("deep/composer.lock", ["*.lock"]))
+        self.assertTrue(match("src/Name.php", ["src/*.php"]))
+        self.assertFalse(match("src/sub/Name.php", ["src/*.php"]))
+        self.assertFalse(match("tests/TestCase.php.bak", ["tests/TestCase.php"]))
+        self.assertTrue(match(".env.local", [".env.*"]))
+        self.assertTrue(orchestrate.JUNK_NAME.search("C*Herdreview-ro/x.php"))
+        self.assertTrue(orchestrate.JUNK_NAME.search("C:/Users/x.php"))
+        self.assertTrue(orchestrate.JUNK_NAME.search("C\uf03aUsers/x.php"))
+        self.assertFalse(orchestrate.JUNK_NAME.search("app/Http/Controller.php"))
+
+    def test_in_scope_change_passes_the_runner_acceptance_check(self):
+        repo = self.make_app()
+        worker = self.operator(repo, ["src/Name.php", "tests/NameTest.php"], allowedPaths=["src/**", "tests/NameTest.php"],
+                               acceptance=self.check("import pathlib; assert pathlib.Path('src/Name.php').read_text() == 'changed\\n'"))
+        code, outcome, err = self.run_plan("ok", [worker])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(outcome["status"], "succeeded")
+        self.assertEqual(outcome["scopeViolations"], [])
+        self.assertTrue(outcome["acceptance"]["passed"])
+        self.assertEqual(outcome["acceptance"]["exitCode"], 0)
+
+    def test_a_reported_done_does_not_override_a_failing_check(self):
+        repo = self.make_app()
+        worker = self.operator(repo, ["src/Name.php"], allowedPaths=["src/**"],
+                               acceptance=self.check("import sys; print('1 test failed: NameTest'); sys.exit(3)"))
+        code, outcome, _ = self.run_plan("claimed", [worker])
+        self.assertEqual(code, 1)
+        self.assertEqual(outcome["workerStatus"], "DONE")
+        self.assertEqual((outcome["status"], outcome["failureKind"]), ("failed", "acceptance_failed"))
+        self.assertEqual(outcome["acceptance"]["exitCode"], 3)
+        self.assertIn("1 test failed: NameTest", outcome["acceptance"]["tail"])
+        self.assertIn("STATUS: DONE", outcome["error"])
+
+    def test_out_of_scope_forbidden_frozen_and_junk_paths_fail_before_acceptance(self):
+        repo = self.make_app()
+        writes = ["src/Name.php", "debug.php", "composer.json", "database/migrations/0001_create_users.php",
+                  "database/migrations/0002_add_name.php", "C\uf03aHerdreview-ro/x.php"]
+        worker = self.operator(repo, writes, allowedPaths=["src/**", "database/**", "composer.*"],
+                               acceptance=self.check("raise SystemExit(0)"))
+        code, outcome, _ = self.run_plan("scope", [worker])
+        self.assertEqual(code, 1)
+        self.assertEqual(outcome["failureKind"], "scope_violation")
+        self.assertIsNone(outcome["acceptance"])
+        reasons = {item["path"]: item["reason"] for item in outcome["scopeViolations"]}
+        self.assertEqual(reasons["debug.php"], "outside allowedPaths (untracked file)")
+        self.assertEqual(reasons["composer.json"], "forbidden path")
+        self.assertEqual(reasons["database/migrations/0001_create_users.php"], "existing file in a frozen path")
+        self.assertIn("junk name", reasons["C\uf03aHerdreview-ro/x.php"])
+        self.assertNotIn("src/Name.php", reasons)
+        self.assertNotIn("database/migrations/0002_add_name.php", reasons)
+
+    def test_literal_allowed_path_or_explicit_forbidden_list_replaces_the_defaults(self):
+        repo = self.make_app()
+        literal = self.operator(repo, ["composer.json"], allowedPaths=["composer.json"])
+        self.assertEqual(self.run_plan("literal", [literal])[1]["status"], "succeeded")
+        explicit = self.operator(repo, ["composer.json"], allowedPaths=["**"], forbiddenPaths=["src/**"])
+        self.assertEqual(self.run_plan("explicit", [explicit])[1]["status"], "succeeded")
+
+    def test_plan_validation_requires_an_isolated_writer(self):
+        repo = self.make_app()
+        cases = [
+            (self.worker("op", "write", ["say", "x"], "text", repo, allowedPaths=["src/**"]), "isolate: true"),
+            (self.operator(repo, [], allowedPaths=[]), "at least one path"),
+            (self.operator(repo, [], allowedPaths=["../outside"]), "repository-relative"),
+            (self.worker("op", "read-only", ["say", "x"], "text", repo, acceptance=self.check("0")), "needs mode write"),
+            (self.operator(repo, [], acceptance={"command": "x", "shell": True}), "unknown fields"),
+        ]
+        for worker, message in cases:
+            with self.subTest(message=message):
+                code, _, err = self.run_plan("invalid", [worker])
+                self.assertNotEqual(code, 0)
+                self.assertIn(message, err)
